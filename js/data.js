@@ -54,12 +54,49 @@ const CHAPTERS = [
    mobs:null, proj:'orb', mini:'zamanbekcisi', boss:'sonsaat'}
 ];
 
-/* ---------- düşman türleri (her bölüm kendi kılığında) ---------- */
+/* ---------- bölüm kadroları: [isim, gövde şekli] ----------
+   Her bölümde 7 tür var: 3 temel tür (tank, koşucu, menzilli) ve o dünyaya uygun 4 özel tür. */
+const ROSTER = [
+  {tank:['Kalkanlı İskelet','skel'], runner:['Koşucu İskelet','skel'], ranged:['Okçu İskelet','skel'],
+   flyer:['Kan Yarasası','bat'], burrower:['Mezar Solucanı','worm'], lobber:['Barut İskeleti','skel'], healer:['Nekromant','caster']},
+  {tank:['Buz Golemi','golem'], runner:['Kar Kurdu','beast'], ranged:['Buz Büyücüsü','caster'],
+   flyer:['Buz Kuzgunu','bird'], jumper:['Buz Örümceği','bug'], charger:['Mamut Yavrusu','beast'], lobber:['Kartopu Trolü','golem']},
+  {tank:['Kabuklu Böcek','bug'], runner:['Sülük','worm'], ranged:['Zehir Cadısı','caster'],
+   flyer:['Dev Sivrisinek','fly'], jumper:['Bataklık Kurbağası','blob'], burrower:['Çamur Solucanı','worm'], healer:['Mantar Şaman','caster']},
+  {tank:['Buhar Golemi','robot'], runner:['Dişli Böcek','bug'], ranged:['Tüfekçi Robot','robot'],
+   flyer:['Pervaneli Drone','drone'], exploder:['Saatli Bomba','robot'], charger:['Buharlı Koç','robot'], lobber:['Havan Robotu','robot']},
+  {tank:['Yengeç Şövalye','crab'], runner:['Köpekbalığı Adam','fish'], ranged:['Mürekkep Atan','blob'],
+   flyer:['Fener Balığı','fish'], burrower:['Kum Yılanbalığı','worm'], jumper:['Zıpzıp Ahtapot','blob'], healer:['Deniz Şamanı','caster']},
+  {tank:['Lav Golemi','golem'], runner:['İblis Köpeği','beast'], ranged:['Ateş İmpi','caster'],
+   flyer:['Alev Yarasası','bat'], exploder:['Lav Balonu','blob'], charger:['Cehennem Boğası','beast'], lobber:['Kükürt Atan','golem']},
+  {tank:['Işık Muhafızı','golem'], runner:['Kanatlı Mızrakçı','angel'], ranged:['Okçu Melek','angel'],
+   flyer:['Kerubim','bird'], healer:['Rahip','caster'], jumper:['Bulut Ruhu','blob'], lobber:['Yıldız Atan','angel']},
+  {tank:['Şişko Zombi','zombie'], runner:['Koşan Zombi','zombie'], ranged:['Tükürükçü','zombie'],
+   flyer:['Leş Sineği','fly'], burrower:['Kanalizasyon Solucanı','worm'], exploder:['Şişkin','blob'], jumper:['Mutant Köpek','beast']},
+  {tank:['Mumya Muhafız','mummy'], runner:['Akrep','bug'], ranged:['Kum Büyücüsü','caster'],
+   flyer:['Akbaba','bird'], burrower:['Kum Solucanı','worm'], charger:['Dev Bok Böceği','bug'], lobber:['Firavun Topçusu','mummy']}
+];
+ROSTER.forEach((r, i) => {
+  CHAPTERS[i].mobs = Object.fromEntries(Object.entries(r).map(([k, v]) => [k, v[0]]));
+  CHAPTERS[i].bodies = Object.fromEntries(Object.entries(r).map(([k, v]) => [k, v[1]]));
+});
+/* ---------- düşman türleri ---------- */
 const ARCH = {
-  tank:   {w:34, h:52, hp:60, dmg:18, speed:70,  gold:8, rol:'Öncü tank', bilgi:'Önden gelen vuruşları bloklar, yavaş döner. Kalkanla vurduktan sonra açıkta kalır.'},
-  runner: {w:24, h:42, hp:25, dmg:12, speed:210, gold:4, rol:'Hızlı yakın dövüşçü', bilgi:'Çömelip gözleri parlayınca ileri atılır. Sadece zeminde gezer.'},
-  ranged: {w:22, h:46, hp:18, dmg:10, speed:95,  gold:5, rol:'Menzilli', bilgi:'Platformlarda durur, yaklaşınca kaçar. Nişan çizgisi kilitlenince atar.'}
+  tank:     {w:34, h:52, hp:60, dmg:18, gold:8, rol:'Öncü tank', bilgi:'Önden gelen vuruşları bloklar, yavaş döner. Kalkanla vurduktan sonra açıkta kalır.'},
+  runner:   {w:24, h:42, hp:25, dmg:12, gold:4, rol:'Hızlı yakın dövüşçü', bilgi:'Çömelip gözleri parlayınca ileri atılır. Sadece zeminde gezer.'},
+  ranged:   {w:22, h:46, hp:18, dmg:10, gold:5, rol:'Menzilli', bilgi:'Platformlarda durur, yaklaşınca kaçar. Nişan çizgisi kilitlenince atar.'},
+  flyer:    {w:30, h:24, hp:16, dmg:12, gold:5, rol:'Uçan', bilgi:'Havada süzülür. Durup gözü parlayınca çizdiği çizgi boyunca dalar, sonra yükselir. Dalışta vurulabilir.'},
+  burrower: {w:30, h:46, hp:34, dmg:16, gold:7, rol:'Yeraltı', bilgi:'Toprağın altında seni izler, vurulamaz. Zemin çatlayınca altından fırlar ve bir süre dışarıda kalır.'},
+  exploder: {w:24, h:30, hp:14, dmg:26, gold:4, rol:'Kamikaze', bilgi:'Sana koşar, yanına gelince yanıp söner ve patlar. Fitil yanarken öldürürsen patlamaz.'},
+  healer:   {w:22, h:46, hp:20, dmg:0,  gold:8, rol:'Şifacı', bilgi:'Arkada durur, yeşil halkayla etrafındaki düşmanları iyileştirir. Önce onu indir.'},
+  jumper:   {w:30, h:26, hp:22, dmg:13, gold:5, rol:'Zıplayan', bilgi:'Çömelir ve iniş yeri işaretlenir, sonra platformlar dahil üstüne atlar.'},
+  charger:  {w:46, h:40, hp:48, dmg:22, gold:9, rol:'Hücumcu', bilgi:'Ayağını yere sürter ve duvara kadar koşar. Üstünden zıpla ya da sıra değiştir. Duvara çarpınca sersemler.'},
+  lobber:   {w:24, h:46, hp:20, dmg:18, gold:6, rol:'Bombacı', bilgi:'Uzaktan bomba fırlatır. İneceği yer işaretlenir, yere düşünce kısa süre sonra patlar.'}
 };
+const BASE_ARCH = ['tank', 'runner', 'ranged'];
+/* özel türler bölüm içinde sırayla tanıtılır: ilk bölümlerde geç, ileri bölümlerde erken gelir */
+const SPECIAL_AT = {flyer:4, jumper:7, exploder:9, lobber:11, burrower:14, healer:18, charger:22};
+const specialOk = (a, c, s) => s >= Math.ceil(SPECIAL_AT[a] * (c <= 2 ? 1 : c <= 4 ? .5 : .2));
 /* elit özellikleri: ileri bölümlerde düşmanlara eklenir */
 /* col: elit özelliği aktifken düşmanın aldığı renk */
 const AFFIX = {
@@ -189,12 +226,14 @@ const ITEM_BY_ID = Object.fromEntries(ITEMS.map(i => [i.id, i]));
    Bölüm sandığı: bölümü ilk temizlemede %60, sonraki temizlemelerde %20.
    Boss ve mini boss her zaman en az bir eşya düşürür. Bossun ilk yenilişinde class'ına uygun silah gelir.
    smart: düşen eşyanın kuşandığın class'tan (ya da takı) olma ihtimali. */
-const DROP = {mob:{tank:.05, ranged:.04, runner:.03}, eliteMul:2.5, chestFirst:.6, chestRepeat:.2,
+const DROP = {mob:{tank:.05, ranged:.04, runner:.03, flyer:.035, burrower:.05, exploder:.025, healer:.06, jumper:.035, charger:.06, lobber:.045},
+  eliteMul:2.5, chestFirst:.6, chestRepeat:.2,
   miniExtra:.3, bossExtra:.5, rare:.02, rareElite:.05, smart:.5};
-const PRICE = it => Math.round((it.slot === 'silah' ? 120 : it.jewel ? 100 : 80) * TF(it.tier) * (it.rare ? 3 : 1));
+/* 1. bölümde zırh 210, takı 250, silah 300 altın. Satış fiyatı alışın %30'u. */
+const PRICE = it => Math.round((it.slot === 'silah' ? 300 : it.jewel ? 250 : 210) * TF(it.tier) * (it.rare ? 3 : 1));
 const SELL = it => Math.max(1, Math.round(PRICE(it) * .3));
 const SHOP_SIZE = 6;
-const REROLL_COST = c => Math.round(20 * TF(c));
+const REROLL_COST = c => Math.round(40 * TF(c));
 
 /* ---------- bölüm üretimi ---------- */
 function rng(seed){
@@ -214,8 +253,12 @@ const FORMS = {
   kiskac: 'Kıskaç: iki yandan koşucular',
   yuksek: 'Yüksek atış: platformlarda menzilliler',
   suru:   'Sürü: çok sayıda koşucu',
-  kale:   'Kale: iki tank ve arkalarında menzilliler'
+  kale:   'Kale: iki tank ve arkalarında menzilliler',
+  hava:   'Hava saldırısı: uçanlar ve onları koruyan tank',
+  karma:  'Karma birlik: bu dünyanın bütün özel türleri'
 };
+/* özel türler kendi yerlerinde doğar: uçan havada, solucan ve hücumcu zeminde, bombacı ve şifacı geride */
+const SPECIAL_HOME = {flyer:'air', burrower:'floor', charger:'floor', exploder:'floor', jumper:'any', healer:'back', lobber:'back'};
 const FORM_KEYS = Object.keys(FORMS);
 
 function levelDef(c, s){
@@ -247,7 +290,8 @@ function genWaves(c, s, R, layout){
   const waves = [];
   for (let wi = 0; wi < n; wi++){
     const size = Math.min(9, 2 + Math.floor(s / 10) + wi + Math.floor((c - 1) / 3));
-    const form = s <= 3 ? 'oncu' : FORM_KEYS[Math.floor(R() * FORM_KEYS.length)];
+    const keys = FORM_KEYS.filter(k => (k !== 'hava' || specialOk('flyer', c, s)) && (k !== 'karma' || s >= 15 || c >= 3));
+    const form = s <= 3 ? 'oncu' : keys[Math.floor(R() * keys.length)];
     waves.push({form, mobs:buildForm(form, size, c, s, R, layout)});
   }
   return waves;
@@ -290,9 +334,28 @@ function buildForm(form, size, c, s, R, layout){
   } else if (form === 'suru'){
     add('ranged', 0, sidePlat(side));
     while (list.length < size) add('runner', (list.length % 2 ? 60 : 900) + R() * 30);
-  } else {
+  } else if (form === 'kale'){
     add('tank', 480 + side * 200); add('tank', 480 + side * 260);
     while (list.length < size) add(list.length % 3 === 2 ? 'runner' : 'ranged', list.length % 3 === 2 ? 480 + side * 320 : 0, list.length % 3 === 2 ? undefined : sidePlat(side));
+  } else if (form === 'hava'){
+    add('tank', 480 + side * 240);
+    while (list.length < size) add(list.length % 3 === 0 ? 'ranged' : 'flyer', 480 + (R() < .5 ? -1 : 1) * (200 + R() * 220), list.length % 3 === 0 ? sidePlat(side) : undefined);
+  } else {
+    add('tank', 480 + side * 230);
+    while (list.length < size) add('special', 480 + (R() < .5 ? -1 : 1) * (200 + R() * 240));
   }
+  /* özel türleri yerleştir: "special" yazanlar ve şansı tutan koşucu/menzilliler bölümün özel türlerinden biri olur */
+  const chance = Math.min(.6, .2 + .35 * (s / 50) + .03 * (c - 1));
+  list.forEach((m, i) => {
+    const ros = Object.keys(ROSTER[m.origin - 1]).filter(a => !BASE_ARCH.includes(a) && specialOk(a, c, s));
+    const want = m.a === 'special' || (i > 0 && m.a !== 'tank' && m.a !== 'flyer' && R() < chance);
+    if (m.a === 'flyer' && !ROSTER[m.origin - 1].flyer) m.a = 'runner';
+    if (!want){ if (m.a === 'special') m.a = 'runner'; return; }
+    if (!ros.length){ if (m.a === 'special') m.a = 'runner'; return; }
+    m.a = ros[Math.floor(R() * ros.length)];
+    const h = SPECIAL_HOME[m.a];
+    if (h === 'floor' || h === 'air') m.home = undefined;
+    else if (h === 'back'){ m.home = R() < .6 ? sidePlat(side) : undefined; if (m.home == null) m.x = 480 + side * (330 + R() * 80); }
+  });
   return list.slice(0, size);
 }

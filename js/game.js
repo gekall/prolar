@@ -70,7 +70,7 @@ function quickSet(cls, tier){
    kuşanılanlar, açılan bölümler, temizlenen bölümler, market durumu. */
 let acct = null;          // {token, id, name, admin, offline}
 let adminView = false;    // sadece admin hesabında: bütün eşyalar ve bölümler açık
-const lobby = {ch:null, code:null, role:null, peers:[], partner:null, ping:null, ready:false, pstate:null, msg:'', joinedAt:0, sendT:0};
+const lobby = {ch:null, code:null, role:null, peers:[], others:[], ping:null, ready:false, pstates:{}, msg:'', joinedAt:0, sendT:0};
 const defaultProfile = () => ({v:1, gold:0, inv:{}, equip:{}, prog:{c:1, s:1}, cleared:{}, bossFirst:{}, shop:null, kills:0});
 let prof = defaultProfile();
 let equip = prof.equip;
@@ -385,6 +385,25 @@ function renderEquip(){
     ${st.synced ? `<p class="syncnote">${st.synced} eşyan ${sel.c}. bölümden yüksek. Bu bölümde taban güçleri ${sel.c}. bölüm seviyesine indirildi, element bonusları duruyor.</p>` : ''}`;
 }
 function runLocked(){ return S.mode === 'play'; }
+/* düşman türleri listesi: seçili bölümün yaratıkları, hangi alt bölümden itibaren çıktıkları */
+const foeName = (c, a) => (c <= 9 && CHAPTERS[c - 1].mobs && CHAPTERS[c - 1].mobs[a]) || ARCH[a].rol;
+function foeFrom(a, c){
+  if (BASE_ARCH.includes(a)) return 1;
+  for (let s = 1; s <= 50; s++) if (specialOk(a, c, s)) return s;
+  return 51;
+}
+function renderFoes(){
+  const el = $('foe-list'); if (!el) return;
+  const c = sel.c, kinds = c <= 9 ? Object.keys(ROSTER[c - 1]) : Object.keys(ARCH);
+  const order = Object.keys(ARCH);
+  kinds.sort((a, b) => foeFrom(a, c) - foeFrom(b, c) || order.indexOf(a) - order.indexOf(b));
+  $('foe-ch').textContent = `${c}. bölüm · ${CHAPTERS[c - 1].ad}`;
+  el.innerHTML = kinds.map(a => {
+    const from = foeFrom(a, c), later = from > sel.s;
+    const nm = c <= 9 ? `${esc(foeName(c, a))} <span class="dim">· ${esc(ARCH[a].rol)}</span>` : esc(ARCH[a].rol);
+    return `<li${later ? ' class="later"' : ''}><b>${nm}</b>${from > 1 ? ` <span class="dim">${c}-${from}'den itibaren</span>` : ''}<span>${esc(ARCH[a].bilgi)}</span></li>`;
+  }).join('');
+}
 function syncUI(){
   for (const [k, id, oid, fmt] of SL){ $(id).value = set[k]; $(oid).textContent = fmt(set[k]); }
   $('win-note').innerHTML = `Süreler boss'un zıpladığı andan itibaren ölçülür. Atış <b>${set.tell} ms</b>'de geliyor. Dodge koruması silahına göre değişir, şu an <b>${S.p.st.ifr} ms</b>.`;
@@ -410,11 +429,13 @@ function syncUI(){
     const bf = !prof.bossFirst[L.boss];
     loot = `Ganimet: kesin 1 eşya${bf ? ' (ilk zaferde class\'ına uygun silah)' : ''}, ${pc(L.kind === 'boss' ? DROP.bossExtra : DROP.miniExtra)} ihtimalle bir tane daha.`;
   } else {
-    loot = `Ganimet: tank ${pc(DROP.mob.tank)}, menzilli ${pc(DROP.mob.ranged)}, koşucu ${pc(DROP.mob.runner)} (elitlerde ${String(DROP.eliteMul).replace('.', ',')} katı). `
+    const kinds = [...new Set(L.waves.flatMap(w => w.mobs.map(m => m.a)))];
+    loot = `Ganimet: ${kinds.map(a => `${esc(foeName(sel.c, a))} ${pc(DROP.mob[a])}`).join(', ')} (elitlerde ${String(DROP.eliteMul).replace('.', ',')} katı). `
       + (key === '1-1' && first ? 'İlk temizlemede kesin bir silah. ' : `Bölüm sandığı ${pc(first ? DROP.chestFirst : DROP.chestRepeat)}${first ? ' (ilk temizleme)' : ''}. `)
       + `Nadir: ${esc(rareIt.ad)}, ${esc(rareIt.from)} ${pc(DROP.rare)} (elit ${pc(DROP.rareElite)}).`;
   }
   const done = prof.cleared[key] ? ` <span class="okc">${prof.cleared[key]} kez temizlendi</span>` : '';
+  renderFoes();
   infoEl.innerHTML = `<span class="lvtag">${sel.c}-${sel.s} · ${kindAd}</span>${done} ${body} <span class="dim">Düşman elementi: ${elT}. Zayıflık: ${weak}. Tuzak: ${L.traps.length}.</span><br><span class="loot">${loot}</span>`;
   const locked = runLocked();
   for (const el of [bagEl, $('market')]){ el.toggleAttribute('inert', locked); el.classList.toggle('locked', locked); }
@@ -526,7 +547,7 @@ function makeState(mode){
        coyote:0, jumpBuf:-9, dodgeT:-9, dodgeUntil:-9, ifrUntil:-9, dodgeDir:1, hurtUntil:-9, stunUntil:-9,
        atkT:-9, atkId:0, altT:-9, dropUntil:-9, blocking:false, blockStart:-9, barrier:0, barrierUntil:-9, castT:-9, castX:0, castY:0},
     e:L.boss ? makeBoss(L) : null,
-    mobs:[], shots:[], pshots:[], quakes:[], bombs:[], bolts:[], booms:[], fx:[], texts:[], loot:[], drops:[], unlockedNext:false
+    mobs:[], shots:[], pshots:[], quakes:[], bombs:[], grenades:[], bolts:[], booms:[], fx:[], texts:[], loot:[], drops:[], unlockedNext:false
   };
   return s;
 }
@@ -582,8 +603,40 @@ function stunTarget(who, dur){
     }
   } else { who.stunUntil = S.t + dur; }
 }
+/* co-op: düşen oyuncu 5 saniye bekler, sonra yeniden doğar. Takımda ayakta kimse kalmazsa bölüm kaybedilir.
+   Tek başına oynarken ölmek bölümü bitirir. */
+const RESPAWN = 5;
+function mates(){
+  if (!lobby.ch) return [];
+  const now = performance.now(), lv = attKey();
+  return Object.values(lobby.pstates).filter(ps => now - ps.rx < 2500 && ps.lv === lv);
+}
+function playerDown(){
+  const p = S.p;
+  if (!mates().some(ps => !ps.dn)){ endRun(false); return; }
+  p.dead = true; p.respawnAt = S.t + RESPAWN; p.vx = 0; p.vy = 0; p.blocking = false;
+  S.downs = (S.downs || 0) + 1;
+  burst(p.x, p.y - 24, C.blood, 26, 300); addShake(6);
+  S.banner = {txt:'Düştün', t:S.t, sub:`${RESPAWN} saniye sonra yeniden doğacaksın`};
+}
+function updDowned(){
+  const p = S.p, ms = mates();
+  if (ms.length && ms.every(ps => ps.dn)){ endRun(false); return; }
+  if (S.t < p.respawnAt) return;
+  /* düşmanlardan en uzak noktada doğ */
+  const foes = enemies();
+  let best = 480, bestD = -1;
+  for (const x of [110, 300, 480, 660, 850]){
+    const d = foes.length ? Math.min(...foes.map(e => Math.abs(e.x - x) + (rowOf(e.y) === 1 ? 0 : 140))) : 999;
+    if (d > bestD){ bestD = d; best = x; }
+  }
+  Object.assign(p, {dead:false, hp:p.st.maxHp, x:best, y:FLOOR, vx:0, vy:0, grounded:true, hurtUntil:S.t + 2, stunUntil:-9});
+  burst(p.x, p.y - 24, C.frost, 22, 260); dust(p.x, p.y, 10, 0);
+  text(p.x, p.y - 70, 'Yeniden doğdun', C.frost, 16);
+}
 function hurtPlayer(o){
   const p = S.p, t = S.t;
+  if (p.dead) return 'invuln';
   if (t < p.ifrUntil) return 'dodged';
   if (t < p.hurtUntil) return 'invuln';
   const fromX = o.fromX == null ? p.x + p.face : o.fromX;
@@ -609,7 +662,7 @@ function hurtPlayer(o){
   S.hitstop = .09; addShake(9); S.flashT = t;
   burst(p.x, p.y - 24, o.el ? elCol(o.el) : C.blood, 14, 260);
   text(p.x, p.y - 62, '-' + dmg, C.blood, 18);
-  if (p.hp <= 0){ p.hp = 0; endRun(false); }
+  if (p.hp <= 0){ p.hp = 0; playerDown(); }
   return 'hit';
 }
 
@@ -617,7 +670,7 @@ function hurtPlayer(o){
 function damageEnemy(t, base, el, o){
   o = o || {};
   if (t.dead || t.hp <= 0) return false;
-  if (!t.isBoss && t.state === 'spawn') return false;
+  if (!t.isBoss && (t.state === 'spawn' || !targetable(t))) return false;
   const p = S.p;
   const fromX = o.fromX == null ? p.x : o.fromX;
   if (!t.isBoss && t.a === 'tank' && t.state !== 'open' && o.blockable !== false && !o.tick && Math.sign(fromX - t.x) === t.face){
@@ -627,6 +680,7 @@ function damageEnemy(t, base, el, o){
     return false;
   }
   let dmg = base, tag = '';
+  if (!t.isBoss && t.a === 'charger' && t.state === 'dazed'){ dmg *= 1.5; tag = 'weak'; }
   if (el && t.weak && el === t.weak){ dmg *= 1.5; tag = 'weak'; }
   else if (el && t.el && el === t.el){ dmg *= .5; tag = 'res'; }
   if (o.backstab && Math.sign(p.x - t.x) !== t.face){ dmg *= p.st.backstab; tag = 'back'; }
@@ -646,9 +700,10 @@ function damageEnemy(t, base, el, o){
   if (o.stun){ if (t.isBoss) text(t.x, t.y - t.h - 30, 'BAĞIŞIK', C.dust, 13); else t.stunUntil = S.t + o.stun; }
   if (o.slow) t.slowUntil = S.t + o.slow;
   if (o.poison){ t.poisonUntil = S.t + 3; t.poisonDps = o.poison; }
-  if (!t.isBoss && !o.tick && t.a !== 'tank'){
+  if (!t.isBoss && !o.tick && !NO_STAGGER_A.has(t.a) && !NO_STAGGER_S.has(t.state)){
     t.kb = Math.sign(t.x - fromX || 1) * (o.melee ? 220 : 120);
-    if (t.state !== 'dash' && t.state !== 'spawn') mset(t, 'hurt', .22);
+    if (t.a === 'flyer') t.kb *= .6;
+    mset(t, 'hurt', .22);
   }
   if (!t.isBoss && t.hp > 0 && t.hp < t.max * .35 && !t.lowFired){
     t.lowFired = true;
@@ -749,7 +804,7 @@ function onDodgePress(){
   }
   S.lastHit = null;
 }
-function enemies(){ const a = S.mobs.filter(m => !m.dead); if (S.e && S.e.hp > 0) a.push(S.e); return a; }
+function enemies(){ const a = S.mobs.filter(m => !m.dead && targetable(m)); if (S.e && S.e.hp > 0) a.push(S.e); return a; }
 function firePlayerShot(kind, dmg, el, extra){
   const p = S.p, sx = p.x + p.face * 10, sy = p.y - 30;
   const ang = Math.atan2(mouse.y - sy, mouse.x - sx);
@@ -1109,7 +1164,11 @@ function spawnMob(d){
     dmg:A.dmg * f, el:och.el === 'mix' ? null : och.el, weak:och.weak === 'mix' ? null : och.weak,
     pal:och.pal, name:och.mobs ? och.mobs[d.a] : d.a, proj:och.proj, aff:d.aff || [],
     tempo:Math.min(1.3, 1 + .025 * (L.c - 1) + .1 * (L.s / 50)), spd:1 + .02 * (L.c - 1),
-    stunUntil:-9, slowUntil:-9, poisonUntil:-9, poisonDps:0, poisonTick:0, lastHitT:-9, invisUntil:-9, enraged:false, lowFired:false};
+    stunUntil:-9, slowUntil:-9, poisonUntil:-9, poisonDps:0, poisonTick:0, lastHitT:-9, invisUntil:-9, enraged:false, lowFired:false,
+    body:(och.bodies && och.bodies[d.a]) || 'skel', seed:Math.random() * 6.28};
+  const so = SIZE_OVR[d.a + ':' + m.body]; if (so){ m.w = so[0]; m.h = so[1]; }
+  if (d.a === 'flyer'){ m.hoverY = rand(190, 330); m.y = m.hoverY; }
+  if (d.a === 'burrower'){ m.state = 'under'; m.cd = rand(.6, 1.2); }
   S.mobs.push(m);
   dust(x, home.y, 8, 0);
   return m;
@@ -1141,8 +1200,8 @@ function updMob(m, dt){
   const el = m.ck - m.st, dx = p.x - m.x, d = Math.abs(dx), side = dx >= 0 ? 1 : -1;
   const same = rowOf(p.y) === rowOf(m.y);
   const mv = m.spd * (t < m.slowUntil ? .5 : 1) * (m.enraged ? 1.3 : 1);
-  if (m.state === 'spawn'){ if (el >= m.dur) mset(m, m.a === 'runner' ? 'chase' : m.a === 'ranged' ? 'idle' : 'walk', 0); return 0; }
-  if (m.state === 'hurt'){ if (el >= m.dur) mset(m, m.a === 'runner' ? 'chase' : m.a === 'ranged' ? 'idle' : 'walk', 0); return 0; }
+  if (m.state === 'spawn'){ if (el >= m.dur) mset(m, BASE_STATE[m.a], 0); return 0; }
+  if (m.state === 'hurt'){ if (el >= m.dur) mset(m, BASE_STATE[m.a], 0); return 0; }
   if (m.a === 'tank'){
     switch (m.state){
       case 'walk':
@@ -1165,7 +1224,7 @@ function updMob(m, dt){
         if (el >= m.dur){ mobShoot(m); m.cd = rand(1.7, 2.6); mset(m, 'idle', 0); }
         return 0;
     }
-  } else {
+  } else if (m.a === 'runner'){
     switch (m.state){
       case 'chase':
         m.face = side; m.cd -= dt * f;
@@ -1176,8 +1235,176 @@ function updMob(m, dt){
       case 'dash': mobAttackHit(m, dashBox(m)); if (el >= m.dur){ m.cd = rand(.6, 1.1); mset(m, 'rec', .5); } return m.face * 520;
       case 'rec': if (el >= m.dur) mset(m, 'chase', 0); return 0;
     }
+  } else if (m.a === 'flyer'){
+    /* süzülür, durup nişan alır, çizgi boyunca dalar, yükselir */
+    switch (m.state){
+      case 'hover': {
+        m.face = side; m.cd -= dt * f;
+        const ty = m.hoverY + Math.sin(m.ck * 2.2 + m.seed) * 26;
+        m.y += clamp(ty - m.y, -140 * dt, 140 * dt);
+        if (m.cd <= 0 && d < 560){ m.aimX = p.x; m.aimY = p.y - 20; mset(m, 'mark', .6); return 0; }
+        const tx = p.x - side * 120;
+        return clamp((tx - m.x) / 60, -1, 1) * 150 * mv;
+      }
+      case 'mark':
+        if (el < m.dur - .16){ m.aimX = clamp(p.x + p.vx * .1, WALL + 10, W - WALL - 10); m.aimY = clamp(p.y - 18, 70, FLOOR - 8); }
+        if (el >= m.dur){
+          const a = Math.atan2(m.aimY - (m.y - m.h / 2), m.aimX - m.x);
+          m.dvx = Math.cos(a) * 640; m.dvy = Math.sin(a) * 640; m.hitDone = false; mset(m, 'dive', .85);
+        }
+        return 0;
+      case 'dive':
+        m.y = clamp(m.y + m.dvy * dt * mv, 60, FLOOR);
+        mobAttackHit(m, tRect(m));
+        if (m.y >= FLOOR || el >= m.dur || (m.dvy > 0 && m.y - m.h / 2 >= m.aimY + 40)){ m.cd = rand(1.8, 2.8); mset(m, 'rise', .9); }
+        return m.dvx * mv;
+      case 'rise':
+        /* dalıştan sonra kısa süre yerde kalır: yakın dövüşçünün vurma anı */
+        if (el < .4) return 0;
+        m.y += clamp(m.hoverY - m.y, -170 * dt, 170 * dt);
+        if (el >= m.dur + .4) mset(m, 'hover', 0);
+        return -m.face * 50;
+    }
+  } else if (m.a === 'burrower'){
+    /* toprağın altında izler (vurulamaz), çatlak gösterir, fırlar, dışarıda kalır, geri kazar */
+    const onFloor = rowOf(p.y) === 1;
+    switch (m.state){
+      case 'under':
+        m.cd -= dt * f;
+        if (onFloor && d < 26 && m.cd <= 0){ mset(m, 'rumble', .65); return 0; }
+        if (!onFloor && m.cd < -3){ mset(m, 'surface', .3); return 0; }
+        return (d > 8 ? side : 0) * 170 * mv;
+      case 'rumble':
+        if (Math.random() < .5) dust(m.x + rand(-20, 20), FLOOR, 1, 0);
+        if (el >= m.dur){ m.hitDone = false; addShake(3); dust(m.x, FLOOR, 12, 0); mset(m, 'erupt', .25); }
+        return 0;
+      case 'erupt': mobAttackHit(m, {l:m.x - 22, r:m.x + 22, t:FLOOR - 96, b:FLOOR}); if (el >= m.dur) mset(m, 'exposed', 1.3); return 0;
+      case 'surface': if (el >= m.dur) mset(m, 'exposed', 1.1); return 0;
+      case 'exposed': m.face = side; if (el >= m.dur){ dust(m.x, FLOOR, 8, 0); mset(m, 'dig', .35); } return 0;
+      case 'dig': if (el >= m.dur){ m.cd = rand(.8, 1.6); mset(m, 'under', 0); } return 0;
+    }
+  } else if (m.a === 'exploder'){
+    switch (m.state){
+      case 'seek':
+        m.face = side;
+        if (same && d < 64){ mset(m, 'fuse', .8); return 0; }
+        return (d > 20 ? side : 0) * (same ? 155 : 110) * mv;
+      case 'fuse':
+        if (el >= m.dur){
+          const cx = m.x, cy = m.y - m.h / 2;
+          S.booms.push({x:cx, y:cy, r:85, t:S.t, col:AFFIX.patlayan.col}); addShake(6);
+          if (Math.hypot(p.x - cx, (p.y - p.h / 2) - cy) < 85){
+            const r = hurtPlayer({dmg:m.dmg, el:m.el, dir:Math.sign(p.x - cx) || 1, fromX:cx, blockable:false});
+            if (r === 'dodged') dodgedFx(t - p.dodgeT < .1);
+          }
+          burst(cx, cy, AFFIX.patlayan.col, 24, 300);
+          m.dead = true; m.selfDestruct = true;
+        }
+        return 0;
+    }
+  } else if (m.a === 'healer'){
+    switch (m.state){
+      case 'idle':
+        m.face = side; m.cd -= dt * f;
+        if (m.cd <= 0 && S.mobs.some(o => o !== m && !o.dead && o.hp < o.max && Math.hypot(o.x - m.x, o.y - m.y) < 170)){ mset(m, 'chant', .8); return 0; }
+        return same && d < 220 ? -side * 90 * mv : 0;
+      case 'chant':
+        if (el >= m.dur){
+          for (const o of S.mobs){
+            if (o === m || o.dead || o.hp >= o.max || Math.hypot(o.x - m.x, o.y - m.y) >= 170) continue;
+            const amt = Math.round(o.max * .3); o.hp = Math.min(o.max, o.hp + amt);
+            text(o.x, o.y - o.h - 12, '+' + amt, '#7de08a', 14); burst(o.x, o.y - o.h / 2, '#7de08a', 6, 120);
+          }
+          m.cd = rand(3, 4.2); mset(m, 'idle', 0);
+        }
+        return 0;
+    }
+  } else if (m.a === 'jumper'){
+    switch (m.state){
+      case 'hop':
+        m.face = side; m.cd -= dt * f;
+        if (m.cd <= 0 && d < 520){ jumperTarget(m); mset(m, 'crouch', .45); return 0; }
+        return (d > 70 ? side : 0) * 60 * mv;
+      case 'crouch':
+        if (el < m.dur - .12) jumperTarget(m);
+        if (el >= m.dur){ m.jx0 = m.x; m.jy0 = m.y; m.hitDone = false; mset(m, 'leap', .62); }
+        return 0;
+      case 'leap': {
+        const k = clamp(el / m.dur, 0, 1);
+        m.x = m.jx0 + (m.jx - m.jx0) * k;
+        m.y = m.jy0 + (m.jy - m.jy0) * k - Math.sin(k * Math.PI) * (90 + Math.abs(m.jy0 - m.jy) * .5);
+        if (k > .65) mobAttackHit(m, tRect(m));
+        if (k >= 1){
+          m.y = m.jy; m.home = homeAt(m.x, m.y); dust(m.x, m.y, 8, 0);
+          m.cd = rand(.9, 1.6); mset(m, 'land', .5);
+        }
+        return 0;
+      }
+      case 'land': if (el >= m.dur) mset(m, 'hop', 0); return 0;
+    }
+  } else if (m.a === 'charger'){
+    switch (m.state){
+      case 'roam':
+        m.face = side; m.cd -= dt * f;
+        if (same && d > 140 && m.cd <= 0){ m.cdir = side; mset(m, 'paw', .7); return 0; }
+        return (d > 220 ? side : d < 120 ? -side : 0) * 80 * mv;
+      case 'paw': m.face = m.cdir; if (Math.random() < .3) dust(m.x - m.cdir * 14, m.y, 1, -m.cdir); if (el >= m.dur){ m.hitDone = false; mset(m, 'charge', 1.6); } return 0;
+      case 'charge': {
+        mobAttackHit(m, tRect(m));
+        const lim = m.cdir > 0 ? m.home.r : m.home.l;
+        if ((m.cdir > 0 && m.x >= lim - 1) || (m.cdir < 0 && m.x <= lim + 1) || el >= m.dur){
+          addShake(5); dust(m.x + m.cdir * m.w / 2, m.y - 20, 12, -m.cdir); text(m.x, m.y - m.h - 10, 'SERSEM', C.dust, 13);
+          m.cd = rand(1.2, 2); mset(m, 'dazed', 1.1);
+          return 0;
+        }
+        return m.cdir * 600 * mv;
+      }
+      case 'dazed': if (el >= m.dur) mset(m, 'roam', 0); return 0;
+    }
+  } else if (m.a === 'lobber'){
+    /* uzakta durur, kolunu kaldırır, iniş yeri işaretlenir, bomba kavis çizerek düşer, kısa süre sonra patlar */
+    switch (m.state){
+      case 'idle':
+        m.face = side; m.cd -= dt * f;
+        if (m.cd <= 0 && d < 640){ lobTarget(m); mset(m, 'windup', .55); return 0; }
+        return same && d < 260 ? -side * 85 * mv : 0;
+      case 'windup':
+        if (el < m.dur - .15) lobTarget(m);
+        if (el >= m.dur){
+          S.grenades.push({x0:m.x + m.face * 8, y0:m.y - m.h + 4, x1:m.lx, y1:m.ly, t0:S.t, dur:.85, dmg:m.dmg, el:m.el, col:m.el ? elCol(m.el) : m.pal.light});
+          m.cd = rand(2.4, 3.4); mset(m, 'idle', 0);
+        }
+        return 0;
+    }
   }
   return 0;
+}
+const BASE_STATE = {tank:'walk', runner:'chase', ranged:'idle', flyer:'hover', burrower:'under', exploder:'seek', healer:'idle', jumper:'hop', charger:'roam', lobber:'idle'};
+const UNTARGETABLE = new Set(['under', 'rumble', 'dig']);
+const NO_STAGGER_A = new Set(['tank', 'burrower', 'charger', 'exploder']);
+const NO_STAGGER_S = new Set(['dash', 'spawn', 'dive', 'leap', 'charge', 'erupt', 'fuse']);
+const targetable = m => !(m.a === 'burrower' && UNTARGETABLE.has(m.state));
+function homeAt(x, y){
+  for (const pl of S.plats) if (Math.abs(pl.y - y) < 2 && x > pl.x && x < pl.x + pl.w) return {y:pl.y, l:pl.x + 14, r:pl.x + pl.w - 14};
+  return {y:FLOOR, l:WALL + 16, r:W - WALL - 16};
+}
+function jumperTarget(m){
+  const p = S.p, tx = clamp(p.x - Math.sign(p.x - m.x || 1) * 18, WALL + 20, W - WALL - 20);
+  m.jx = tx; m.jy = surfaceBelow(tx, p.y - 1);
+}
+function lobTarget(m){
+  const p = S.p;
+  m.lx = clamp(p.x + p.vx * .5, WALL + 20, W - WALL - 20);
+  m.ly = surfaceBelow(m.lx, p.y - 1);
+}
+function updGrenades(){
+  for (const g of S.grenades){
+    if (S.t - g.t0 >= g.dur && !g.landed){
+      g.landed = true; dust(g.x1, g.y1, 5, 0);
+      S.bombs.push({x:g.x1, y:g.y1 + 20, at:S.t + .5, lead:.5, r:62, dmg:g.dmg, el:g.el, col:g.col});
+    }
+  }
+  S.grenades = S.grenades.filter(g => !g.landed);
 }
 function tickPoison(e, dt){
   if (S.t < e.poisonUntil){
@@ -1190,7 +1417,8 @@ function updMobs(dt){
     if (m.dead) continue;
     const vx = updMob(m, dt);
     m.kb *= Math.pow(.002, dt);
-    m.x = clamp(m.x + (vx + m.kb) * dt, m.home.l, m.home.r);
+    if (m.state === 'leap') m.x = clamp(m.x, WALL + 16, W - WALL - 16);
+    else m.x = clamp(m.x + (vx + m.kb) * dt, m.home.l, m.home.r);
     if (m.flash > 0) m.flash -= dt;
     tickPoison(m, dt);
     if (m.aff.includes('yenilenen') && !m.dead && S.t - m.lastHitT > 2 && m.hp < m.max) m.hp = Math.min(m.max, m.hp + m.max * .04 * dt);
@@ -1319,13 +1547,13 @@ function updFx(dt){
 function step(dt){
   if (S.hitstop > 0){ S.hitstop -= dt; return false; }
   S.t += dt;
-  updPlayer(dt);
+  if (S.p.dead) updDowned(); else updPlayer(dt);
   if (S.mode === 'play'){
     if (S.e && S.e.hp > 0) updBoss(dt);
     if (S.mode === 'play') updMobs(dt);
     if (S.mode === 'play') updLevel(dt);
   }
-  if (S.mode === 'play'){ updShots(dt); updPShots(dt); updQuakes(dt); updBombs(); updTraps(); }
+  if (S.mode === 'play'){ updShots(dt); updPShots(dt); updQuakes(dt); updBombs(); updGrenades(); updTraps(); }
   updFx(dt);
   return true;
 }
@@ -1565,9 +1793,53 @@ function drawTelegraphs(){
     if (S.t < m.invisUntil) continue;
     if (m.a === 'tank' && m.state === 'bashWind') floorBand(m.x + m.face * 8, m.x + m.face * 62, m.y, rgba(C.blood, .15 + .4 * k));
     if (m.a === 'runner' && m.state === 'wind') floorBand(m.x, m.x + m.face * 155, m.y, rgba(C.blood, .15 + .4 * k));
+    if (m.a === 'flyer' && m.state === 'mark'){
+      dashedLine(m.x, m.y - m.h / 2, m.aimX, m.aimY, rgba(C.blood, .25 + .5 * k), 2);
+      ctx.strokeStyle = rgba(C.blood, .4 + .5 * pulse); ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(m.aimX, m.aimY, 14 - 6 * k, 0, Math.PI * 2); ctx.stroke();
+    }
+    if (m.a === 'burrower' && (m.state === 'under' || m.state === 'rumble')){
+      /* toprak altındaki solucanın yeri: kabaran toprak; patlamadan önce çatlak ve kırmızı sütun */
+      const r = m.state === 'rumble';
+      ctx.fillStyle = rgba(m.pal.mob, r ? .9 : .55);
+      ctx.beginPath(); ctx.ellipse(m.x, FLOOR, r ? 26 : 18, r ? 7 + 3 * pulse : 5, 0, Math.PI, 0); ctx.fill();
+      if (r){
+        ctx.strokeStyle = rgba(C.blood, .5 + .4 * k); ctx.lineWidth = 2;
+        ctx.beginPath();
+        for (let i = -2; i <= 2; i++){ ctx.moveTo(m.x + i * 9, FLOOR - 2); ctx.lineTo(m.x + i * 13 + (i % 2 ? 4 : -4), FLOOR - 9 - 6 * k); }
+        ctx.stroke();
+        ctx.fillStyle = rgba(C.blood, .08 + .2 * k); ctx.fillRect(m.x - 22, FLOOR - 96, 44, 96);
+        drawAlert(m.x, FLOOR - 104, C.blood);
+      }
+    }
+    if (m.a === 'exploder' && m.state === 'fuse'){
+      ctx.strokeStyle = rgba(AFFIX.patlayan.col, .35 + .55 * pulse); ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(m.x, m.y - m.h / 2, 85, 0, Math.PI * 2); ctx.stroke();
+      ctx.fillStyle = rgba(AFFIX.patlayan.col, .06 + .14 * k);
+      ctx.beginPath(); ctx.arc(m.x, m.y - m.h / 2, 85 * k, 0, Math.PI * 2); ctx.fill();
+    }
+    if (m.a === 'healer' && m.state === 'chant'){
+      ctx.strokeStyle = rgba('#7de08a', .3 + .4 * pulse); ctx.lineWidth = 2; ctx.setLineDash([6, 6]);
+      ctx.beginPath(); ctx.arc(m.x, m.y - m.h / 2, 170, 0, Math.PI * 2); ctx.stroke(); ctx.setLineDash([]);
+    }
+    if (m.a === 'jumper' && m.state === 'crouch'){
+      ctx.strokeStyle = rgba(C.blood, .35 + .5 * k); ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.ellipse(m.jx, m.jy - 2, 22, 5, 0, 0, Math.PI * 2); ctx.stroke();
+      floorBand(m.jx - 18, m.jx + 18, m.jy, rgba(C.blood, .15 + .35 * k));
+    }
+    if (m.a === 'charger' && m.state === 'paw') floorBand(m.x, m.cdir > 0 ? m.home.r : m.home.l, m.y, rgba(C.blood, .12 + .4 * k));
+    if (m.a === 'lobber' && m.state === 'windup'){
+      ctx.strokeStyle = rgba(C.blood, .35 + .5 * k); ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(m.lx, m.ly - 20, 62 * (.5 + .5 * k), 0, Math.PI * 2); ctx.stroke();
+    }
+  }
+  for (const g of S.grenades){
+    ctx.strokeStyle = rgba(C.blood, .5 + .4 * pulse); ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(g.x1, g.y1 - 20, 62, 0, Math.PI * 2); ctx.stroke();
+    floorBand(g.x1 - 30, g.x1 + 30, g.y1, rgba(C.blood, .25));
   }
   for (const b of S.bombs){
-    const k = clamp(1 - (b.at - S.t) / .8, 0, 1);
+    const k = clamp(1 - (b.at - S.t) / (b.lead || .8), 0, 1);
     ctx.strokeStyle = rgba(AFFIX.patlayan.col, .4 + .5 * pulse); ctx.lineWidth = 2;
     ctx.beginPath(); ctx.arc(b.x, b.y - 20, b.r * (.4 + .6 * k), 0, Math.PI * 2); ctx.stroke();
   }
@@ -1790,51 +2062,324 @@ function drawRibs(x, y, w, h, col){
   ctx.fillStyle = rgba(C.pit, .4);
   for (let i = 1; i <= 3; i++) ctx.fillRect(x + 3, y + i * h / 4.2, w - 6, 2);
 }
-function mobTint(m){
-  if (!m.aff.length) return null;
-  if (m.enraged) return AFFIX.ofkeli.col;
-  if (m.aff.includes('zirhli') && m.hp > m.max * .6) return AFFIX.zirhli.col;
-  if (m.aff.includes('yenilenen') && m.hp < m.max && S.t - m.lastHitT > 2) return AFFIX.yenilenen.col;
-  if (m.aff.includes('patlayan')) return AFFIX.patlayan.col;
-  return null;
+/* ---------- mob gövdeleri: her bölüm kendi yaratıklarını çizer ---------- */
+const TELL_S = new Set(['bashWind', 'wind', 'aim', 'mark', 'rumble', 'fuse', 'chant', 'crouch', 'paw', 'windup']);
+const ALERT_S = new Set(['bashWind', 'wind', 'mark', 'fuse', 'crouch', 'paw', 'windup']);
+const HUMANOID = new Set(['skel', 'zombie', 'mummy', 'golem', 'robot', 'caster', 'angel']);
+const MOVING_S = new Set(['walk', 'chase', 'seek', 'roam', 'hop', 'idle', 'hover', 'dash', 'charge']);
+/* gövde ile çarpışma kutusu aynı olsun diye bazı yaratıkların boyu türünden farklı */
+const SIZE_OVR = {'runner:beast':[44, 30], 'runner:worm':[42, 18], 'runner:bug':[40, 22], 'tank:bug':[48, 34], 'tank:crab':[50, 38], 'ranged:blob':[32, 30]};
+function gait(m, sp){ return MOVING_S.has(m.state) ? Math.sin(S.t * sp + m.seed) : 0; }
+function eyeDot(x, y, r, col, hot){ ctx.fillStyle = hot ? col : rgba(col, .7); ctx.beginPath(); ctx.arc(x, y, hot ? r * 1.25 : r, 0, Math.PI * 2); ctx.fill(); }
+function drawMobBody(m, y, col, hi, tell, el){
+  const b = m.body;
+  if (m.a === 'exploder' && b === 'robot') return bodyBomb(m, y, col, hi, tell);
+  if (b === 'beast') return bodyBeast(m, y, col, hi, tell);
+  if (b === 'bug') return bodyBug(m, y, col, hi, tell);
+  if (b === 'crab') return bodyCrab(m, y, col, hi, tell);
+  if (b === 'worm') return bodyWorm(m, y, col, hi, tell, el);
+  if (b === 'blob') return bodyBlob(m, y, col, hi, tell);
+  if (b === 'bat') return bodyBat(m, y, col, hi, tell);
+  if (b === 'bird') return bodyBird(m, y, col, hi, tell);
+  if (b === 'fly') return bodyFly(m, y, col, hi, tell);
+  if (b === 'drone') return bodyDrone(m, y, col, hi, tell);
+  if (b === 'fish' && m.a === 'flyer') return bodyFish(m, y, col, hi, tell);
+  return bodyHumanoid(m, y, col, hi, tell);
 }
-function drawMob(m){
-  const t = S.t, el = m.ck - m.st, f = m.face, P = m.pal;
-  const rise = m.state === 'spawn' ? clamp(el / m.dur, 0, 1) : 1;
-  const invis = t < m.invisUntil;
-  ctx.save();
-  if (invis) ctx.globalAlpha = .14 + .06 * Math.sin(t * 14);
-  if (rise < 1){ ctx.beginPath(); ctx.rect(m.x - 70, 0, 140, m.home.y); ctx.clip(); }
-  const y = m.y + (1 - rise) * (m.h + 6);
-  const pulse = .5 + .5 * Math.sin(t * 18);
-  /* elit durum rengi: öfkeli mor, zırhı aktif kırmızı, can yeniliyorsa sarı, patlayan turuncu nabız */
-  const tint = mobTint(m);
-  const tk = tint ? (tint === AFFIX.patlayan.col ? .35 + .3 * Math.sin(t * 6) : .68) : 0;
-  const col = m.flash > 0 ? C.bone : tint ? hexMix(P.mob, tint, tk) : P.mob;
-  const hi = m.flash > 0 ? C.bone : tint ? hexMix(P.mobHi, tint, tk * .7) : P.mobHi;
-  if (tint && !invis && rise >= 1){
-    const ag = ctx.createRadialGradient(m.x, y - m.h / 2, 4, m.x, y - m.h / 2, m.h * .95);
-    ag.addColorStop(0, rgba(tint, .34)); ag.addColorStop(1, rgba(tint, 0));
-    ctx.fillStyle = ag; ctx.fillRect(m.x - m.h, y - m.h * 1.4, m.h * 2, m.h * 1.6);
+function bodyHumanoid(m, y, col, hi, tell){
+  const x = m.x, f = m.face, P = m.pal, k = m.body, w = m.w;
+  const H = m.h * (m.state === 'wind' || m.state === 'crouch' ? .82 : 1), top = y - H;
+  const legH = H * .3, tTop = top + H * .24, tH = y - legH - tTop + 2;
+  const tw = w * (k === 'golem' ? .95 : k === 'skel' ? .7 : .76);
+  const g = gait(m, 11) * 2.5, lean = k === 'zombie' ? f * 4 : 0;
+  if (k === 'angel'){
+    const fl = Math.sin(S.t * 6 + m.seed) * 4;
+    ctx.fillStyle = rgba(hi, .5);
+    for (const s of [0, 1]){
+      const o = s * 7;
+      ctx.beginPath(); ctx.moveTo(x - f * 2, tTop + 4);
+      ctx.quadraticCurveTo(x - f * (14 + o), tTop - 16 - fl + o, x - f * (28 + o), tTop - 8 - fl + o);
+      ctx.quadraticCurveTo(x - f * (18 + o), tTop + 8 + o, x - f * 2, tTop + tH * .6); ctx.fill();
+    }
   }
-  if (invis){ ctx.strokeStyle = rgba(AFFIX.gorunmez.col, .9); ctx.lineWidth = 1.5; ctx.setLineDash([3, 4]); ctx.strokeRect(m.x - m.w / 2 - 3, y - m.h - 3, m.w + 6, m.h + 3); ctx.setLineDash([]); }
+  if (k === 'caster' || k === 'angel'){
+    ctx.fillStyle = col;
+    ctx.beginPath(); ctx.moveTo(x - tw * .4, tTop); ctx.lineTo(x + tw * .4, tTop); ctx.lineTo(x + w * .58, y); ctx.lineTo(x - w * .58, y); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = rgba(C.pit, .3); ctx.fillRect(x - w * .58, y - 4, w * 1.16, 4);
+    ctx.fillStyle = rgba(hi, .45); ctx.fillRect(x - 1.5, tTop + 4, 3, y - tTop - 8);
+  } else {
+    const lw = Math.max(4, w * (k === 'golem' ? .26 : .19));
+    ctx.fillStyle = k === 'robot' ? hi : col;
+    ctx.fillRect(x - w * .24 - lw / 2 + g, y - legH, lw, legH);
+    ctx.fillRect(x + w * .24 - lw / 2 - g, y - legH, lw, legH);
+    if (k === 'skel') drawRibs(x - tw / 2, tTop, tw, tH, col);
+    else {
+      ctx.fillStyle = col; rr(x - tw / 2 + lean, tTop, tw, tH, k === 'robot' ? 2 : 5); ctx.fill();
+      if (k === 'mummy'){
+        ctx.strokeStyle = rgba(hi, .75); ctx.lineWidth = 1.5; ctx.beginPath();
+        for (let i = 0; i < 4; i++){ const yy = tTop + 4 + i * tH / 4; ctx.moveTo(x - tw / 2, yy + 3); ctx.lineTo(x + tw / 2, yy - 2); }
+        ctx.stroke();
+      } else if (k === 'golem'){
+        ctx.strokeStyle = rgba(P.light, tell ? .95 : .55); ctx.lineWidth = 1.5; ctx.beginPath();
+        ctx.moveTo(x - tw * .2, tTop + 4); ctx.lineTo(x, tTop + tH * .45); ctx.lineTo(x + tw * .18, tTop + tH * .8); ctx.stroke();
+        ctx.fillStyle = hi;
+        for (const s of [-1, 1]){ ctx.beginPath(); ctx.arc(x + s * (tw / 2 + 3), tTop + tH * .7, w * .17, 0, Math.PI * 2); ctx.fill(); }
+      } else if (k === 'robot'){
+        ctx.fillStyle = rgba(hi, .6); ctx.fillRect(x - tw * .3, tTop + 5, tw * .6, tH * .35);
+        eyeDot(x + f * tw * .15, tTop + 5 + tH * .17, 2, P.eye, tell);
+      } else if (k === 'zombie'){
+        ctx.fillStyle = rgba(C.pit, .35); ctx.fillRect(x - tw / 2 + lean, tTop + tH - 5, tw * .5, 5); ctx.fillRect(x + lean, tTop + tH * .4, tw * .3, 4);
+        const ay = tTop + 6 + (MOVING_S.has(m.state) ? Math.sin(S.t * 5 + m.seed) * 2 : 0);
+        ctx.strokeStyle = hi; ctx.lineWidth = 3.5; ctx.lineCap = 'round';
+        ctx.beginPath(); ctx.moveTo(x + lean + f * tw * .3, ay); ctx.lineTo(x + lean + f * (tw * .5 + 16), ay + 2); ctx.stroke();
+      }
+    }
+  }
+  const hx = x + lean + f * 2, hy = top + H * .12;
+  if (k === 'skel') drawSkull(hx, hy + 1, hi, f, tell, P.eye);
+  else if (k === 'robot'){
+    ctx.fillStyle = hi; rr(hx - 8, hy - 7, 16, 13, 2); ctx.fill();
+    ctx.fillStyle = tell ? P.eye : rgba(P.eye, .7); ctx.fillRect(f > 0 ? hx - 2 : hx - 7, hy - 3, 9, 3);
+    ctx.strokeStyle = hi; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.moveTo(hx, hy - 7); ctx.lineTo(hx, hy - 13); ctx.stroke();
+    eyeDot(hx, hy - 14, 1.8, P.light, tell);
+  } else if (k === 'golem'){
+    ctx.fillStyle = hi; rr(hx - 7, tTop - 9, 14, 12, 3); ctx.fill();
+    ctx.fillStyle = tell ? P.eye : rgba(P.eye, .7); ctx.fillRect(hx + f * 2 - 3, tTop - 5, 6, 2.5);
+  } else if (k === 'caster'){
+    ctx.fillStyle = col;
+    ctx.beginPath(); ctx.moveTo(hx - 9, hy + 7); ctx.quadraticCurveTo(hx - 9, hy - 9, hx - f * 4, hy - 13); ctx.quadraticCurveTo(hx + 9, hy - 8, hx + 9, hy + 7); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = rgba(C.pit, .85); ctx.beginPath(); ctx.arc(hx + f * 1.5, hy + 1, 5.5, 0, Math.PI * 2); ctx.fill();
+    eyeDot(hx + f * 1.5 - 2, hy, 1.2, P.eye, tell); eyeDot(hx + f * 1.5 + 2, hy, 1.2, P.eye, tell);
+  } else if (k === 'fish'){
+    ctx.fillStyle = hi; ctx.beginPath(); ctx.ellipse(hx + f * 3, hy + 1, 10, 7, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.moveTo(hx - f * 2, hy - 5); ctx.lineTo(hx - f * 6, hy - 15); ctx.lineTo(hx + f * 4, hy - 6); ctx.closePath(); ctx.fill();
+    ctx.strokeStyle = rgba(C.pit, .7); ctx.lineWidth = 1.2; ctx.beginPath(); ctx.moveTo(hx + f * 6, hy + 3); ctx.lineTo(hx + f * 12, hy + 3); ctx.stroke();
+    eyeDot(hx + f * 5, hy - 1, 1.6, P.eye, tell);
+  } else {
+    ctx.fillStyle = hi; ctx.beginPath(); ctx.arc(hx, hy, 7.5, 0, Math.PI * 2); ctx.fill();
+    if (k === 'mummy'){
+      ctx.strokeStyle = rgba(C.pit, .35); ctx.lineWidth = 1.2; ctx.beginPath();
+      ctx.moveTo(hx - 7, hy - 3); ctx.lineTo(hx + 7, hy - 5); ctx.moveTo(hx - 7, hy + 3); ctx.lineTo(hx + 7, hy + 1); ctx.stroke();
+      eyeDot(hx + f * 3, hy - 1, 1.6, P.eye, tell);
+    } else if (k === 'zombie'){
+      ctx.fillStyle = rgba(C.pit, .5); ctx.fillRect(hx + f - 3, hy + 3, 7, 3);
+      eyeDot(hx + f * 3, hy - 2, 1.6, P.eye, tell); eyeDot(hx - f, hy - 1, 1.1, P.eye, false);
+    } else eyeDot(hx + f * 3, hy - 1, 1.5, P.eye, tell);
+    if (k === 'angel'){ ctx.strokeStyle = rgba(P.light, .85); ctx.lineWidth = 2; ctx.beginPath(); ctx.ellipse(hx, hy - 12, 8, 2.5, 0, 0, Math.PI * 2); ctx.stroke(); }
+  }
+}
+function bodyBeast(m, y, col, hi, tell){
+  const x = m.x, f = m.face, P = m.pal, w = m.w, h = m.h;
+  const cy = y - h * .58 + (tell ? 3 : 0), bl = w * .78, bh = h * .46;
+  const g = gait(m, m.state === 'charge' ? 22 : 12), lw = Math.max(4, w * .12);
+  ctx.fillStyle = col;
+  for (const [o, s] of [[-.32, 1], [-.18, -1], [.2, 1], [.32, -1]]) ctx.fillRect(x + f * bl * o - lw / 2 + s * g * 3, cy + bh * .1, lw, y - cy - bh * .1);
+  ctx.strokeStyle = col; ctx.lineWidth = 3; ctx.lineCap = 'round';
+  ctx.beginPath(); ctx.moveTo(x - f * bl * .45, cy - 2); ctx.quadraticCurveTo(x - f * bl * .6, cy - bh * .5, x - f * (bl * .62 + 4), cy - bh * .9 + g * 2); ctx.stroke();
+  ctx.beginPath(); ctx.ellipse(x, cy, bl / 2, bh / 2, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = rgba(hi, .35); ctx.beginPath(); ctx.ellipse(x - f * 2, cy - bh * .18, bl * .38, bh * .2, 0, 0, Math.PI * 2); ctx.fill();
+  const hr = h * .22, hx = x + f * (bl * .5 + hr * .2), hy = cy - bh * .35 + (tell ? 4 : 0);
+  ctx.fillStyle = hi; ctx.beginPath(); ctx.arc(hx, hy, hr, 0, Math.PI * 2); ctx.fill();
+  ctx.beginPath(); ctx.ellipse(hx + f * hr * .9, hy + hr * .3, hr * .65, hr * .42, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.beginPath(); ctx.moveTo(hx - f * hr * .2, hy - hr * .7); ctx.lineTo(hx - f * hr * .55, hy - hr * 1.5); ctx.lineTo(hx + f * hr * .3, hy - hr * .85); ctx.closePath(); ctx.fill();
+  eyeDot(hx + f * hr * .35, hy - hr * .2, Math.max(1.5, hr * .17), P.eye, tell);
+  if (tell || m.state === 'dash' || m.state === 'leap'){ ctx.fillStyle = C.bone; ctx.fillRect(hx + f * hr * .9, hy + hr * .55, f * hr * .8, 2); }
+  if (m.a === 'charger'){
+    ctx.strokeStyle = C.bone; ctx.lineWidth = 3.5; ctx.lineCap = 'round'; ctx.beginPath();
+    ctx.moveTo(hx + f * hr * .4, hy - hr * .6); ctx.quadraticCurveTo(hx + f * hr * 1.6, hy - hr * 1.2, hx + f * hr * 1.9, hy - hr * .2);
+    ctx.moveTo(hx + f * hr * .9, hy + hr * .55); ctx.quadraticCurveTo(hx + f * hr * 1.9, hy + hr * 1.2, hx + f * hr * 2.2, hy + hr * .1);
+    ctx.stroke();
+  }
+}
+function bodyBug(m, y, col, hi, tell){
+  const x = m.x, f = m.face, P = m.pal, w = m.w, h = m.h, scorp = m.name === 'Akrep';
+  const cy = y - h * .5 + (tell ? 3 : 0), rx = w * .44, ry = h * .38;
+  const n = m.a === 'jumper' ? 4 : 3, g = gait(m, 16);
+  ctx.strokeStyle = col; ctx.lineWidth = 2; ctx.lineCap = 'round'; ctx.beginPath();
+  for (let i = 0; i < n; i++){
+    const lx = x + (i - (n - 1) / 2) * (rx * 1.5 / n), dir = i < (n - 1) / 2 ? -1 : 1, wob = (i % 2 ? g : -g) * 2.5;
+    ctx.moveTo(lx, cy); ctx.lineTo(lx + dir * 6 + wob, cy - ry * .6 - 3); ctx.lineTo(lx + dir * 11 + wob, y);
+  }
+  ctx.stroke();
+  if (scorp){
+    const tx = x - f * rx * .1 + (tell ? f * 6 : 0), ty = cy - h * .95;
+    ctx.lineWidth = 4; ctx.beginPath(); ctx.moveTo(x - f * rx * .8, cy); ctx.quadraticCurveTo(x - f * rx * 1.4, cy - h * 1.1, tx, ty); ctx.stroke();
+    eyeDot(tx, ty, 3.2, P.eye, tell);
+  }
+  ctx.fillStyle = col; ctx.beginPath(); ctx.ellipse(x - f * 3, cy, rx, ry, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = rgba(hi, .45); ctx.beginPath(); ctx.ellipse(x - f * 5, cy - ry * .35, rx * .7, ry * .35, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.strokeStyle = rgba(C.pit, .4); ctx.lineWidth = 1.5; ctx.beginPath(); ctx.moveTo(x - f * 3, cy - ry); ctx.lineTo(x - f * 3, cy + ry); ctx.stroke();
+  const hr = Math.max(5, h * .22), hx = x + f * rx * .95, hy = cy + 1;
+  ctx.fillStyle = hi; ctx.beginPath(); ctx.arc(hx, hy, hr, 0, Math.PI * 2); ctx.fill();
+  ctx.strokeStyle = hi; ctx.lineWidth = 1.5; ctx.beginPath();
+  ctx.moveTo(hx + f * hr * .8, hy + 2); ctx.lineTo(hx + f * (hr + 6), hy + (tell ? 6 : 4));
+  ctx.moveTo(hx + f * hr * .8, hy - 2); ctx.lineTo(hx + f * (hr + 6), hy - (tell ? 6 : 4));
+  if (!scorp && m.a !== 'charger'){ ctx.moveTo(hx, hy - hr); ctx.quadraticCurveTo(hx + f * 4, hy - hr - 10, hx + f * 12, hy - hr - 9); }
+  ctx.stroke();
+  if (m.a === 'charger'){
+    ctx.strokeStyle = C.bone; ctx.lineWidth = 4; ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.moveTo(hx, hy - hr * .6); ctx.quadraticCurveTo(hx + f * hr * 1.4, hy - hr * 2.4, hx + f * hr * 2.2, hy - hr * 1.2); ctx.stroke();
+  }
+  eyeDot(hx + f * hr * .35, hy - hr * .3, 1.8, P.eye, tell);
+  if (m.a === 'jumper') eyeDot(hx + f * hr * .05, hy - hr * .5, 1.3, P.eye, tell);
+}
+function bodyCrab(m, y, col, hi, tell){
+  const x = m.x, f = m.face, P = m.pal, w = m.w, h = m.h;
+  const cy = y - h * .45, rx = w * .42, ry = h * .3, g = gait(m, 14);
+  ctx.strokeStyle = col; ctx.lineWidth = 2.5; ctx.lineCap = 'round'; ctx.beginPath();
+  for (let i = 0; i < 3; i++) for (const s of [-1, 1]){ const lx = x + s * rx * (.3 + i * .25); ctx.moveTo(lx, cy + 2); ctx.lineTo(lx + s * 7 + g * (i % 2 ? 2 : -2), y - 6); ctx.lineTo(lx + s * 9, y); }
+  ctx.moveTo(x + f * 4, cy - ry); ctx.lineTo(x + f * 6, cy - ry - 10); ctx.moveTo(x - f * 4, cy - ry); ctx.lineTo(x - f * 3, cy - ry - 9);
+  ctx.stroke();
+  eyeDot(x + f * 6, cy - ry - 11, 2.4, P.eye, tell); eyeDot(x - f * 3, cy - ry - 10, 2.2, P.eye, tell);
+  ctx.fillStyle = col; ctx.beginPath(); ctx.ellipse(x, cy, rx, ry, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = rgba(hi, .45); ctx.beginPath(); ctx.ellipse(x, cy - ry * .35, rx * .7, ry * .4, 0, 0, Math.PI * 2); ctx.fill();
+  const cx = x - f * (rx + 4), ccy = cy - ry - 4 - (tell ? 4 : 0);
+  ctx.fillStyle = hi; ctx.beginPath(); ctx.arc(cx, ccy, 7, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = rgba(C.pit, .7); ctx.beginPath(); ctx.moveTo(cx - f * 2, ccy); ctx.lineTo(cx - f * 9, ccy - 3); ctx.lineTo(cx - f * 9, ccy + 2); ctx.closePath(); ctx.fill();
+}
+function bodyWorm(m, y, col, hi, tell, el){
+  const x = m.x, f = m.face, P = m.pal, w = m.w, h = m.h;
+  if (m.a === 'burrower'){
+    const H = m.state === 'erupt' ? 96 * clamp(el / .08, 0, 1) : h * (m.state === 'surface' ? clamp(el / m.dur, 0, 1) : m.state === 'dig' ? 1 - clamp(el / m.dur, 0, 1) : 1);
+    if (H >= 2){
+      const n = Math.max(2, Math.round(H / 11)), r0 = w * .45;
+      for (let i = 0; i < n; i++){
+        const k = i / (n - 1), sy = y - 4 - k * (H - r0 * .8), sx = x + Math.sin(S.t * 3 + m.seed + k * 2) * 4 * k;
+        ctx.fillStyle = i % 2 ? col : hexMix(col, hi, .35); ctx.beginPath(); ctx.arc(sx, sy, r0 * (1 - .25 * k), 0, Math.PI * 2); ctx.fill();
+      }
+      const tx = x + Math.sin(S.t * 3 + m.seed + 2) * 4 + f * 3, ty = y - H + r0 * .2;
+      ctx.fillStyle = rgba(C.pit, .9); ctx.beginPath(); ctx.ellipse(tx, ty, r0 * .55, r0 * .4, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = C.bone;
+      for (let i = 0; i < 6; i++){ const a = i / 6 * Math.PI * 2 + S.t; ctx.beginPath(); ctx.arc(tx + Math.cos(a) * r0 * .42, ty + Math.sin(a) * r0 * .3, 1.4, 0, Math.PI * 2); ctx.fill(); }
+    }
+    ctx.fillStyle = rgba(P.mob, .9); ctx.beginPath(); ctx.ellipse(x, y, w * .65, 5, 0, Math.PI, 0); ctx.fill();
+    return;
+  }
+  const moving = MOVING_S.has(m.state) ? 1 : 0;
+  for (let i = 0; i < 5; i++){
+    const k = i / 4, sx = x - f * w / 2 + f * k * w, sy = y - h * .45 - Math.abs(Math.sin(S.t * 9 + m.seed + k * 3)) * 3 * moving;
+    ctx.fillStyle = i % 2 ? col : hexMix(col, hi, .35); ctx.beginPath(); ctx.arc(sx, sy, h * .45 * (.75 + .25 * k), 0, Math.PI * 2); ctx.fill();
+  }
+  const hx = x + f * w / 2, hy = y - h * .45;
+  ctx.fillStyle = rgba(C.pit, .85); ctx.beginPath(); ctx.arc(hx + f * 3, hy, h * .2, 0, Math.PI * 2); ctx.fill();
+  eyeDot(hx - f, hy - h * .28, 1.6, P.eye, tell);
+}
+function bodyBlob(m, y, col, hi, tell){
+  const x = m.x, f = m.face, P = m.pal, wob = Math.sin(S.t * 5 + m.seed) * .05;
+  let W = m.w, H = m.h;
+  if (m.state === 'crouch'){ W *= 1.2; H *= .7; } else if (m.state === 'leap'){ W *= .85; H *= 1.15; } else { W *= 1 + wob; H *= 1 - wob; }
+  if (m.name === 'Zıpzıp Ahtapot' || m.name === 'Mürekkep Atan'){
+    ctx.strokeStyle = col; ctx.lineWidth = 3; ctx.lineCap = 'round'; ctx.beginPath();
+    for (let i = 0; i < 4; i++){ const tx = x - W * .38 + i * W * .25; ctx.moveTo(tx, y - H * .3); ctx.quadraticCurveTo(tx + Math.sin(S.t * 6 + i) * 5, y - 4, tx + Math.sin(S.t * 6 + i + 1) * 6, y); }
+    ctx.stroke();
+  }
+  ctx.fillStyle = col; ctx.beginPath(); ctx.moveTo(x - W / 2, y); ctx.bezierCurveTo(x - W / 2, y - H * 1.3, x + W / 2, y - H * 1.3, x + W / 2, y); ctx.closePath(); ctx.fill();
+  if (m.a === 'exploder' || m.name === 'Bulut Ruhu'){
+    const r = W * .45, gr = ctx.createRadialGradient(x, y - H * .45, 1, x, y - H * .45, r);
+    gr.addColorStop(0, rgba(P.light, m.state === 'fuse' ? .95 : .55)); gr.addColorStop(1, rgba(P.light, 0));
+    ctx.fillStyle = gr; ctx.beginPath(); ctx.arc(x, y - H * .45, r, 0, Math.PI * 2); ctx.fill();
+  }
+  ctx.fillStyle = rgba(hi, .5); ctx.beginPath(); ctx.ellipse(x - W * .15, y - H * .72, W * .16, H * .12, -.5, 0, Math.PI * 2); ctx.fill();
+  const ey = y - H * .55;
+  for (const s of [-1, 1]){
+    ctx.fillStyle = C.bone; ctx.beginPath(); ctx.arc(x + f * 4 + s * W * .14, ey, 3.2, 0, Math.PI * 2); ctx.fill();
+    eyeDot(x + f * 5.5 + s * W * .14, ey, 1.5, P.eye, tell);
+  }
+}
+function bodyBat(m, y, col, hi, tell){
+  const x = m.x, f = m.face, P = m.pal, w = m.w, h = m.h, cy = y - h / 2;
+  const fl = m.state === 'dive' ? -.6 : Math.sin(S.t * 18 + m.seed);
+  ctx.fillStyle = col;
+  for (const s of [-1, 1]){
+    ctx.beginPath(); ctx.moveTo(x + s * 4, cy - 2);
+    ctx.lineTo(x + s * w * .45, cy - 8 - fl * h * .45); ctx.lineTo(x + s * w * .8, cy - 2 - fl * h * .35);
+    ctx.lineTo(x + s * w * .62, cy + 4 - fl * h * .15); ctx.lineTo(x + s * w * .42, cy + 2 - fl * h * .2); ctx.lineTo(x + s * w * .25, cy + 6); ctx.closePath(); ctx.fill();
+  }
+  ctx.fillStyle = hi; ctx.beginPath(); ctx.ellipse(x, cy, h * .3, h * .38, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.beginPath(); ctx.moveTo(x - 5, cy - h * .25); ctx.lineTo(x - 3, cy - h * .6); ctx.lineTo(x - 1, cy - h * .3); ctx.closePath(); ctx.fill();
+  ctx.beginPath(); ctx.moveTo(x + 5, cy - h * .25); ctx.lineTo(x + 3, cy - h * .6); ctx.lineTo(x + 1, cy - h * .3); ctx.closePath(); ctx.fill();
+  eyeDot(x + f * 2 - 2.5, cy - 2, 1.6, P.eye, tell); eyeDot(x + f * 2 + 2.5, cy - 2, 1.6, P.eye, tell);
+}
+function bodyBird(m, y, col, hi, tell){
+  const x = m.x, f = m.face, P = m.pal, w = m.w, h = m.h, cy = y - h / 2;
+  const fl = m.state === 'dive' ? -.8 : Math.sin(S.t * 12 + m.seed);
+  ctx.fillStyle = col;
+  ctx.beginPath(); ctx.moveTo(x - f * w * .3, cy); ctx.lineTo(x - f * w * .62, cy - 4); ctx.lineTo(x - f * w * .6, cy + 5); ctx.closePath(); ctx.fill();
+  ctx.beginPath(); ctx.ellipse(x, cy, w * .34, h * .3, 0, 0, Math.PI * 2); ctx.fill();
+  const hx = x + f * w * .3, hy = cy - h * .18, hr = h * .24;
+  ctx.fillStyle = hi; ctx.beginPath(); ctx.arc(hx, hy, hr, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = C.ember; ctx.beginPath(); ctx.moveTo(hx + f * hr * .8, hy - 3); ctx.lineTo(hx + f * (hr + 8), hy + 1); ctx.lineTo(hx + f * hr * .8, hy + 3); ctx.closePath(); ctx.fill();
+  eyeDot(hx + f * hr * .2, hy - hr * .25, 1.6, P.eye, tell);
+  ctx.fillStyle = hexMix(col, hi, .3); ctx.beginPath(); ctx.moveTo(x + f * 4, cy - 2); ctx.lineTo(x - f * 4, cy - 4 - fl * h * .9); ctx.lineTo(x - f * w * .3, cy - 2 - fl * h * .6); ctx.closePath(); ctx.fill();
+}
+function bodyFly(m, y, col, hi, tell){
+  const x = m.x, f = m.face, P = m.pal, w = m.w, h = m.h, cy = y - h / 2;
+  const fl = Math.abs(Math.sin(S.t * 40 + m.seed));
+  ctx.fillStyle = rgba(C.bone, .3);
+  ctx.beginPath(); ctx.ellipse(x - f * 3, cy - h * .35, w * .28, 3 + fl * 4, -f * .5, 0, Math.PI * 2); ctx.fill();
+  ctx.beginPath(); ctx.ellipse(x - f * 8, cy - h * .3, w * .22, 2 + fl * 3, -f * .9, 0, Math.PI * 2); ctx.fill();
+  ctx.strokeStyle = col; ctx.lineWidth = 1.5; ctx.beginPath();
+  for (let i = 0; i < 3; i++){ ctx.moveTo(x - 4 + i * 4, cy + 3); ctx.lineTo(x - 6 + i * 4, cy + h * .45); }
+  ctx.stroke();
+  ctx.fillStyle = col; ctx.beginPath(); ctx.ellipse(x - f * 4, cy + 1, w * .3, h * .26, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.strokeStyle = rgba(C.pit, .35); ctx.lineWidth = 1.2; ctx.beginPath();
+  for (let i = 0; i < 3; i++){ ctx.moveTo(x - f * (8 - i * 4), cy - h * .2); ctx.lineTo(x - f * (8 - i * 4), cy + h * .22); }
+  ctx.stroke();
+  ctx.fillStyle = hi; ctx.beginPath(); ctx.arc(x + f * w * .22, cy, h * .2, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = tell ? P.eye : rgba(P.eye, .75); ctx.beginPath(); ctx.arc(x + f * (w * .22 + 2), cy - 1, h * .14, 0, Math.PI * 2); ctx.fill();
+  ctx.strokeStyle = hi; ctx.lineWidth = 1.2; ctx.beginPath(); ctx.moveTo(x + f * (w * .22 + h * .18), cy + 2); ctx.lineTo(x + f * (w * .22 + h * .18 + 9), cy + (m.state === 'dive' ? 2 : 6)); ctx.stroke();
+}
+function bodyDrone(m, y, col, hi, tell){
+  const x = m.x, f = m.face, P = m.pal, w = m.w, h = m.h, cy = y - h * .45;
+  ctx.strokeStyle = hi; ctx.lineWidth = 2; ctx.beginPath();
+  ctx.moveTo(x - w * .25, cy - h * .2); ctx.lineTo(x - w * .4, cy - h * .5); ctx.moveTo(x + w * .25, cy - h * .2); ctx.lineTo(x + w * .4, cy - h * .5); ctx.stroke();
+  const sp = Math.abs(Math.sin(S.t * 45 + m.seed));
+  ctx.fillStyle = rgba(C.bone, .45);
+  for (const s of [-1, 1]){ ctx.beginPath(); ctx.ellipse(x + s * w * .4, cy - h * .52, w * .3 * (.3 + .7 * sp), 1.8, 0, 0, Math.PI * 2); ctx.fill(); }
+  ctx.fillStyle = col; rr(x - w * .32, cy - h * .3, w * .64, h * .55, 4); ctx.fill();
+  ctx.fillStyle = rgba(C.pit, .6); ctx.beginPath(); ctx.arc(x + f * w * .12, cy, h * .2, 0, Math.PI * 2); ctx.fill();
+  eyeDot(x + f * w * .12, cy, h * .1, P.eye, tell);
+  if (tell){ ctx.fillStyle = rgba(P.eye, .25 + .3 * Math.abs(Math.sin(S.t * 30))); ctx.beginPath(); ctx.arc(x + f * w * .12, cy, h * .35, 0, Math.PI * 2); ctx.fill(); }
+}
+function bodyFish(m, y, col, hi, tell){
+  const x = m.x, f = m.face, P = m.pal, w = m.w, h = m.h, cy = y - h / 2, sw = Math.sin(S.t * 8 + m.seed) * 4;
+  ctx.fillStyle = col;
+  ctx.beginPath(); ctx.moveTo(x - f * w * .35, cy); ctx.lineTo(x - f * w * .62, cy - 8 + sw); ctx.lineTo(x - f * w * .62, cy + 8 + sw); ctx.closePath(); ctx.fill();
+  ctx.beginPath(); ctx.ellipse(x, cy, w * .4, h * .42, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = rgba(hi, .5); ctx.beginPath(); ctx.ellipse(x, cy + h * .15, w * .3, h * .18, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = rgba(C.pit, .85); ctx.beginPath(); ctx.ellipse(x + f * w * .3, cy + h * .12, w * .12, h * .14, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = C.bone; for (let i = 0; i < 3; i++) ctx.fillRect(x + f * (w * .22 + i * 3), cy + h * .02, 1.5, 3);
+  eyeDot(x + f * w * .15, cy - h * .15, 2, P.eye, tell);
+  const lx = x + f * w * .45, ly = cy - h * .9;
+  ctx.strokeStyle = hi; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.moveTo(x + f * w * .05, cy - h * .38); ctx.quadraticCurveTo(x + f * w * .2, ly - 6, lx, ly); ctx.stroke();
+  drawOrb(lx, ly, tell ? 4 : 2.8, P.light);
+}
+function bodyBomb(m, y, col, hi, tell){
+  const x = m.x, f = m.face, w = m.w, g = gait(m, 16) * 3;
+  ctx.fillStyle = hi; ctx.fillRect(x - 6 + g, y - 8, 3, 8); ctx.fillRect(x + 3 - g, y - 8, 3, 8);
+  const r = w * .5, cy = y - 8 - r * .9;
+  ctx.fillStyle = col; ctx.beginPath(); ctx.arc(x, cy, r, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = rgba(C.bone, .85); ctx.beginPath(); ctx.arc(x + f * 2, cy, r * .55, 0, Math.PI * 2); ctx.fill();
+  const a = S.t * (tell ? 14 : 2);
+  ctx.strokeStyle = C.pit; ctx.lineWidth = 1.5; ctx.beginPath();
+  ctx.moveTo(x + f * 2, cy); ctx.lineTo(x + f * 2 + Math.cos(a) * r * .45, cy + Math.sin(a) * r * .45); ctx.moveTo(x + f * 2, cy); ctx.lineTo(x + f * 2, cy - r * .35); ctx.stroke();
+  ctx.strokeStyle = C.rust; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(x, cy - r); ctx.quadraticCurveTo(x - f * 4, cy - r - 6, x - f * 2, cy - r - 9); ctx.stroke();
+  ctx.fillStyle = tell ? C.ember : rgba(C.ember, .6 + .4 * Math.sin(S.t * 20)); ctx.beginPath(); ctx.arc(x - f * 2, cy - r - 9, tell ? 3.5 : 2.2, 0, Math.PI * 2); ctx.fill();
+}
+/* türün eşyası: tankın kalkanı, menzillinin silahı, şifacının asası, bombacının bombası */
+function drawMobProp(m, y, hi, el, pulse, vis){
+  const x = m.x, f = m.face, P = m.pal, w = m.w, h = m.h, t = S.t;
   if (m.a === 'tank'){
-    ctx.fillStyle = col; ctx.fillRect(m.x - 10, y - 16, 6, 16); ctx.fillRect(m.x + 4, y - 16, 6, 16);
-    drawRibs(m.x - 14, y - 44, 28, 30, col);
-    drawSkull(m.x + f * 2, y - 52, hi, f, m.state === 'bashWind', P.eye);
-    let sx = m.x + f * 19, sy = y - 50, sh = 44;
+    let sx = x + f * (w / 2 + 2), sy = y - h * .96, sh = h * .85;
     if (m.state === 'bashWind') sx -= f * 4;
     if (m.state === 'bash') sx += f * 12;
-    if (m.state === 'open'){ sx = m.x + f * 12; sy = y - 24; sh = 24; }
+    if (m.state === 'open'){ sx = x + f * (w / 2 - 5); sy = y - h * .46; sh = h * .46; }
     ctx.fillStyle = P.wallHi; rr(sx - 6, sy, 12, sh, 3); ctx.fill();
     ctx.strokeStyle = m.state === 'bashWind' ? rgba(C.blood, .5 + .5 * pulse) : rgba(P.eye, .5); ctx.lineWidth = m.state === 'bashWind' ? 3 : 2;
     rr(sx - 6, sy, 12, sh, 3); ctx.stroke();
-    if (m.turnT > 0){ ctx.fillStyle = rgba(C.bone, .5); ctx.fillRect(m.x - 12, y - m.h - 10, 24 * (m.turnT / .7), 2); }
+    if (m.turnT > 0){ ctx.fillStyle = rgba(C.bone, .5); ctx.fillRect(x - 12, y - h - 10, 24 * (m.turnT / .7), 2); }
   } else if (m.a === 'ranged'){
-    ctx.fillStyle = col; ctx.fillRect(m.x - 7, y - 14, 4, 14); ctx.fillRect(m.x + 3, y - 14, 4, 14);
-    drawRibs(m.x - 9, y - 38, 18, 24, col);
-    drawSkull(m.x, y - 44, hi, f, m.state === 'aim', P.eye);
-    const bx = m.x + f * 12, by = y - 30;
+    const bx = x + f * 12, by = y - 30;
     if (m.proj === 'arrow'){
       const pull = m.state === 'aim' ? clamp(el / (m.dur - .18), 0, 1) * 8 : 0;
       ctx.strokeStyle = C.rust; ctx.lineWidth = 3; ctx.beginPath();
@@ -1845,27 +2390,93 @@ function drawMob(m){
       ctx.beginPath(); ctx.moveTo(ex, by - Math.sin(1.1) * 16); ctx.lineTo(ex - f * pull, by); ctx.lineTo(ex, by + Math.sin(1.1) * 16); ctx.stroke();
     } else if (m.proj === 'bullet'){
       ctx.fillStyle = P.wallHi; ctx.fillRect(f > 0 ? bx - 4 : bx - 18, by - 4, 22, 7);
-    } else {
-      drawOrb(bx, by - 4, m.state === 'aim' ? 5 + 2 * pulse : 3.5, m.el ? elCol(m.el) : P.light);
-    }
-    if (m.state === 'aim' && rise >= 1 && !invis){
+    } else drawOrb(bx, by - 4, m.state === 'aim' ? 5 + 2 * pulse : 3.5, m.el ? elCol(m.el) : P.light);
+    if (m.state === 'aim' && vis){
       const locked = el >= m.dur - .18, k = clamp(el / (m.dur - .18), 0, 1);
       dashedLine(bx, by, m.aimX, m.aimY, locked ? rgba(C.ember, .6 + .4 * pulse) : rgba(C.ember, .12 + .3 * k), locked ? 2.5 : 1.5);
     }
-  } else {
-    const crouch = m.state === 'wind' ? .78 : 1, top = y - m.h * crouch;
-    ctx.fillStyle = col; ctx.fillRect(m.x - 8, y - 12, 5, 12); ctx.fillRect(m.x + 3, y - 12, 5, 12);
-    drawRibs(m.x - 10, top + 14, 20, y - 12 - (top + 14), col);
-    drawSkull(m.x + f * 5, top + 7, hi, f, m.state === 'wind' || m.state === 'dash', P.eye);
-    ctx.strokeStyle = C.bone; ctx.lineWidth = 2.5; ctx.lineCap = 'round';
-    const hy = top + 24;
-    ctx.beginPath(); ctx.moveTo(m.x + f * 8, hy); ctx.lineTo(m.x + f * 24, hy + (m.state === 'dash' ? 0 : 8)); ctx.stroke();
-    if (m.state === 'dash'){
-      ctx.strokeStyle = rgba(C.dust, .4); ctx.lineWidth = 2; ctx.beginPath();
-      for (let i = 0; i < 3; i++){ ctx.moveTo(m.x - f * (14 + i * 10), top + 12 + i * 9); ctx.lineTo(m.x - f * (34 + i * 12), top + 12 + i * 9); }
-      ctx.stroke();
+  } else if (m.a === 'runner'){
+    if (HUMANOID.has(m.body) || m.body === 'fish'){
+      const top = y - h * (m.state === 'wind' ? .82 : 1), hy = top + h * .57, len = m.body === 'angel' ? 34 : 24;
+      ctx.strokeStyle = m.body === 'angel' ? P.light : C.bone; ctx.lineWidth = 2.5; ctx.lineCap = 'round';
+      ctx.beginPath(); ctx.moveTo(x + f * 8, hy); ctx.lineTo(x + f * len, hy + (m.state === 'dash' ? 0 : 8)); ctx.stroke();
     }
+  } else if (m.a === 'healer'){
+    const sx = x + f * (w / 2 + 3);
+    ctx.strokeStyle = C.rust; ctx.lineWidth = 2.5; ctx.lineCap = 'round'; ctx.beginPath(); ctx.moveTo(sx, y); ctx.lineTo(sx, y - h - 4); ctx.stroke();
+    drawOrb(sx, y - h - 8, m.state === 'chant' ? 4 + 2 * pulse : 3, '#7de08a');
+  } else if (m.a === 'lobber'){
+    const k = m.state === 'windup' ? clamp(el / m.dur, 0, 1) : 0;
+    const bx = m.state === 'windup' ? x - f * (4 + 6 * k) : x + f * (w / 2 + 2), by = m.state === 'windup' ? y - h - 6 - 8 * k : y - h * .45;
+    ctx.strokeStyle = hi; ctx.lineWidth = 3; ctx.lineCap = 'round'; ctx.beginPath(); ctx.moveTo(x, y - h * .68); ctx.lineTo(bx, by + 4); ctx.stroke();
+    ctx.fillStyle = C.pit; ctx.beginPath(); ctx.arc(bx, by, 6, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = m.el ? elCol(m.el) : P.light; ctx.beginPath(); ctx.arc(bx - 1.5, by - 1.5, 2.5, 0, Math.PI * 2); ctx.fill();
+  } else if (m.a === 'charger' && m.state === 'dazed'){
+    ctx.fillStyle = C.bone;
+    for (let i = 0; i < 3; i++){ const a = t * 7 + i * 2.1; ctx.fillRect(x + Math.cos(a) * 16 - 2, y - h - 6 + Math.sin(a) * 4 - 2, 4, 4); }
   }
+  if (m.state === 'dash' || m.state === 'charge'){
+    const top = y - h;
+    ctx.strokeStyle = rgba(C.dust, .4); ctx.lineWidth = 2; ctx.beginPath();
+    for (let i = 0; i < 3; i++){ ctx.moveTo(x - f * (w / 2 + 2 + i * 10), top + 10 + i * h * .22); ctx.lineTo(x - f * (w / 2 + 22 + i * 12), top + 10 + i * h * .22); }
+    ctx.stroke();
+  }
+}
+/* bombacının havadaki bombası ve yere düşmüş, patlamayı bekleyen bombalar */
+function drawGrenades(){
+  for (const g of S.grenades){
+    const k = clamp((S.t - g.t0) / g.dur, 0, 1);
+    const x = g.x0 + (g.x1 - g.x0) * k, y = g.y0 + (g.y1 - 8 - g.y0) * k - Math.sin(k * Math.PI) * (110 + Math.abs(g.x1 - g.x0) * .15);
+    ctx.fillStyle = C.pit; ctx.beginPath(); ctx.arc(x, y, 6, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = g.col; ctx.beginPath(); ctx.arc(x - 1.5, y - 1.5, 2.6, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = rgba(C.ember, .5 + .5 * Math.sin(S.t * 30)); ctx.fillRect(x - 1, y - 9, 2, 3);
+  }
+  for (const b of S.bombs){
+    if (!b.lead) continue;
+    const y = b.y - 26;
+    ctx.fillStyle = C.pit; ctx.beginPath(); ctx.arc(b.x, y, 6, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = b.col || C.ember; ctx.beginPath(); ctx.arc(b.x - 1.5, y - 1.5, 2.6, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = rgba(C.ember, .5 + .5 * Math.sin(S.t * 40)); ctx.fillRect(b.x - 1, y - 9, 2, 3);
+  }
+}
+function mobTint(m){
+  if (!m.aff.length) return null;
+  if (m.enraged) return AFFIX.ofkeli.col;
+  if (m.aff.includes('zirhli') && m.hp > m.max * .6) return AFFIX.zirhli.col;
+  if (m.aff.includes('yenilenen') && m.hp < m.max && S.t - m.lastHitT > 2) return AFFIX.yenilenen.col;
+  if (m.aff.includes('patlayan')) return AFFIX.patlayan.col;
+  return null;
+}
+function drawMob(m){
+  if (m.a === 'burrower' && (m.state === 'under' || m.state === 'rumble')) return;
+  const t = S.t, el = m.ck - m.st, f = m.face, P = m.pal, air = m.a === 'flyer';
+  const rise = m.state === 'spawn' ? clamp(el / m.dur, 0, 1) : 1;
+  const invis = t < m.invisUntil;
+  ctx.save();
+  if (invis) ctx.globalAlpha = .14 + .06 * Math.sin(t * 14);
+  else if (air && rise < 1) ctx.globalAlpha = rise;
+  if (rise < 1 && !air){ ctx.beginPath(); ctx.rect(m.x - 70, 0, 140, m.home.y); ctx.clip(); }
+  const y = m.y + (air ? 0 : (1 - rise) * (m.h + 6));
+  const pulse = .5 + .5 * Math.sin(t * 18);
+  /* elit durum rengi: öfkeli mor, zırhı aktif kırmızı, can yeniliyorsa sarı, patlayan turuncu nabız */
+  const tint = mobTint(m);
+  const tk = tint ? (tint === AFFIX.patlayan.col ? .35 + .3 * Math.sin(t * 6) : .68) : 0;
+  let col = m.flash > 0 ? C.bone : tint ? hexMix(P.mob, tint, tk) : P.mob;
+  const hi = m.flash > 0 ? C.bone : tint ? hexMix(P.mobHi, tint, tk * .7) : P.mobHi;
+  if (tint && !invis && rise >= 1){
+    const ag = ctx.createRadialGradient(m.x, y - m.h / 2, 4, m.x, y - m.h / 2, m.h * .95);
+    ag.addColorStop(0, rgba(tint, .34)); ag.addColorStop(1, rgba(tint, 0));
+    ctx.fillStyle = ag; ctx.fillRect(m.x - m.h, y - m.h * 1.4, m.h * 2, m.h * 1.6);
+  }
+  if (invis){ ctx.strokeStyle = rgba(AFFIX.gorunmez.col, .9); ctx.lineWidth = 1.5; ctx.setLineDash([3, 4]); ctx.strokeRect(m.x - m.w / 2 - 3, y - m.h - 3, m.w + 6, m.h + 3); ctx.setLineDash([]); }
+  const tell = TELL_S.has(m.state), vis = rise >= 1 && !invis;
+  if (m.a === 'exploder' && m.state === 'fuse'){
+    const sc = 1 + .22 * clamp(el / m.dur, 0, 1) + .04 * pulse;
+    ctx.translate(m.x, y); ctx.scale(sc, sc); ctx.translate(-m.x, -y);
+    col = hexMix(col, '#ffffff', .2 + .5 * pulse);
+  }
+  drawMobBody(m, y, col, hi, tell, el);
+  drawMobProp(m, y, hi, el, pulse, vis);
   if (t < m.slowUntil){ ctx.fillStyle = rgba(elCol('buz'), .22); ctx.fillRect(m.x - m.w / 2 - 4, y - m.h - 4, m.w + 8, m.h + 4); }
   ctx.restore();
   if (invis || rise < 1) return;
@@ -1880,8 +2491,7 @@ function drawMob(m){
     ctx.fillStyle = AFFIX[m.aff[0]].col;
     ctx.fillText(m.aff.map(a => AFFIX[a].ad.toUpperCase()).join(' · '), m.x, m.y - m.h - 22);
   }
-  if (m.a === 'tank' && m.state === 'bashWind') drawAlert(m.x, m.y - m.h - 26, C.blood);
-  if (m.a === 'runner' && m.state === 'wind') drawAlert(m.x, m.y - m.h - 20, C.blood);
+  if (ALERT_S.has(m.state)) drawAlert(m.x, m.y - m.h - (m.a === 'tank' ? 26 : 20), m.a === 'exploder' ? AFFIX.patlayan.col : C.blood);
 }
 /* ---------- oyuncu çizimi (eşyalara göre) ---------- */
 function gearCls(slot){ const it = ITEM_BY_ID[equip[slot]]; return it && it.cls ? it.cls : null; }
@@ -1893,6 +2503,14 @@ function drawBodyShape(x, y, col, outfit){
 }
 function drawPlayer(){
   const p = S.p, t = S.t, st = p.st, w = st.wd, f = p.face;
+  if (p.dead){
+    const left = Math.max(0, p.respawnAt - t);
+    ctx.globalAlpha = .4; ctx.fillStyle = C.frost; rr(p.x - 9, p.y - 22, 18, 22, 6); ctx.fill(); ctx.globalAlpha = 1;
+    ctx.textAlign = 'center';
+    ctx.font = `700 64px ${F_DISPLAY}`; ctx.fillStyle = C.bone; ctx.fillText(String(Math.ceil(left)), W / 2, 210);
+    ctx.font = `500 16px ${F_BODY}`; ctx.fillStyle = C.dust; ctx.fillText('saniye sonra yeniden doğacaksın', W / 2, 236);
+    return;
+  }
   const ifr = t < p.ifrUntil;
   const dodging = t < p.dodgeUntil;
   if (S.mode === 'play' && t < p.hurtUntil && Math.floor(t * 16) % 2 === 0) return;
@@ -2121,6 +2739,7 @@ function drawOverlay(){
     const info = e ? `${e.def.ad}: ${Math.max(0, Math.ceil(e.hp))} / ${e.max} can kaldı   ·   kaçtığın saldırı ${S.dodged}`
                    : `Dalga ${S.wave + 1} / ${L.waves.length}   ·   altın ${S.gold}   ·   kaçtığın saldırı ${S.dodged}`;
     centerLine(info, C.dust, `500 17px ${F_BODY}`, 270);
+    if (lobby.ch && lobby.others.length) centerLine('Takımda ayakta kimse kalmadı', C.ember, `500 15px ${F_BODY}`, 296);
     centerLine("Tekrar denemek için tıkla ya da R'ye bas", C.bone, `500 20px ${F_BODY}`, 322);
     drawLootLine(372, 'Ölünce bir şey kaybetmezsin.');
     centerLine('Eşyalarını değiştirmek için sayfanın altındaki envantere bak', C.dust, `400 14px ${F_BODY}`, 440);
@@ -2144,10 +2763,11 @@ function render(now){
   drawTraps();
   drawTelegraphs();
   if (S.e && S.e.hp > 0) drawShadow(S.e.x, S.e.y, S.e.w);
-  for (const m of S.mobs) if (m.state !== 'spawn' && !(S.t < m.invisUntil)) drawShadow(m.x, m.y, m.w);
-  drawShadow(S.p.x, S.p.y, S.p.w);
+  for (const m of S.mobs) if (m.state !== 'spawn' && !(S.t < m.invisUntil) && targetable(m) && m.state !== 'surface') drawShadow(m.x, m.y, m.w);
+  if (!S.p.dead) drawShadow(S.p.x, S.p.y, S.p.w);
   drawQuakes();
   for (const m of S.mobs) drawMob(m);
+  drawGrenades();
   if (S.e && (S.e.hp > 0 || S.mode !== 'won')) drawBoss();
   drawPartner();
   drawPlayer(); drawShots(); drawFx(); drawDrops();
@@ -2325,10 +2945,12 @@ async function boot(){
 }
 
 /* ===================== ONLINE LOBİ (hazırlık) =====================
-   Lobi sahibi 5 haneli bir kod alır, arkadaşı o kodla katılır. En fazla 2 kişi.
+   Lobi sahibi 5 haneli bir kod alır, arkadaşları o kodla katılır. En fazla 4 kişi.
    Bölümü lobi sahibi seçer, ilerleme onun hesabına yazılır. Misafir altın ve eşya kazanır.
    Şimdilik oyuncular birbirinin hareketini ve canını görür. Düşmanlar henüz her ekranda ayrı hesaplanıyor. */
-const PARTNER_COL = '#9fd8c8';
+const LOBBY_MAX = 4;
+const PARTNER_COLS = ['#9fd8c8', '#e3a6d6', '#d9c77a'];
+const partnerCol = nick => { const i = lobby.others.findIndex(o => o.nick === nick); return PARTNER_COLS[(i < 0 ? 0 : i) % PARTNER_COLS.length]; };
 /* lobi kodu: 5 haneli rakam. Lobi hiçbir yere kaydedilmez, herkes çıkınca kendiliğinden kapanır. */
 function lobbyCode(){ return String(10000 + Math.floor(Math.random() * 90000)); }
 function myPresence(){
@@ -2344,14 +2966,14 @@ function lobbyJoin(code, role){
   lobbyLeave(true);
   const ch = NET.channel('prolar-lobi-' + code, {config:{broadcast:{self:false}, presence:{key:acct.name}}});
   if (!ch){ lobby.msg = 'Sunucuya bağlanılamıyor.'; renderLobby(); return; }
-  Object.assign(lobby, {ch, code, role, peers:[], partner:null, ping:null, ready:false, pstate:null, msg:'Bağlanıyor…', joinedAt:Date.now(), subscribed:false});
+  Object.assign(lobby, {ch, code, role, peers:[], others:[], ping:null, ready:false, pstates:{}, msg:'Bağlanıyor…', joinedAt:Date.now(), subscribed:false});
   ch.on('presence', {event:'sync'}, onPresence);
   ch.on('broadcast', {event:'lvl'}, ({payload}) => { if (lobby.role === 'guest' && payload && S.mode !== 'play') selectLevel(payload.c, payload.s, true); });
   ch.on('broadcast', {event:'start'}, ({payload}) => {
     if (lobby.role !== 'guest' || !payload || S.mode === 'play') return;
     selectLevel(payload.c, payload.s, true); newRun();
   });
-  ch.on('broadcast', {event:'p'}, ({payload}) => { lobby.pstate = Object.assign({}, payload, {rx:performance.now()}); });
+  ch.on('broadcast', {event:'p'}, ({payload}) => { if (payload && payload.n) lobby.pstates[payload.n] = Object.assign({}, payload, {rx:performance.now()}); });
   ch.on('broadcast', {event:'ping'}, ({payload}) => lobbySend('pong', payload));
   ch.on('broadcast', {event:'pong'}, ({payload}) => { if (payload && payload.from === acct.name) lobby.ping = Math.round(performance.now() - payload.t); });
   ch.subscribe(async status => {
@@ -2371,17 +2993,19 @@ function onPresence(){
   const ch = lobby.ch; if (!ch) return;
   const peers = Object.values(ch.presenceState()).map(arr => arr[arr.length - 1]).filter(Boolean);
   lobby.peers = peers;
-  if (peers.length > 2){
-    const late = peers.slice().sort((a, b) => a.at - b.at).slice(2);
-    if (late.some(p => p.nick === acct.name)){ lobbyLeave(true); lobby.msg = 'Lobi dolu. Bir lobide en fazla 2 kişi olabilir.'; renderLobby(); return; }
+  if (peers.length > LOBBY_MAX){
+    const late = peers.slice().sort((a, b) => a.at - b.at).slice(LOBBY_MAX);
+    if (late.some(p => p.nick === acct.name)){ lobbyLeave(true); lobby.msg = `Lobi dolu. Bir lobide en fazla ${LOBBY_MAX} kişi olabilir.`; renderLobby(); return; }
   }
-  lobby.partner = peers.find(p => p.nick !== acct.name) || null;
-  if (lobby.role === 'guest' && lobby.partner && lobby.partner.role !== 'host') lobby.msg = 'Bu lobide lobi sahibi yok.';
+  lobby.others = peers.filter(p => p.nick !== acct.name).sort((a, b) => a.at - b.at).slice(0, LOBBY_MAX - 1);
+  for (const n of Object.keys(lobby.pstates)) if (!lobby.others.some(o => o.nick === n)) delete lobby.pstates[n];
+  if (lobby.role === 'guest' && lobby.others.length && !lobby.others.some(o => o.role === 'host')) lobby.msg = 'Bu lobide lobi sahibi yok.';
+  else if (lobby.msg === 'Bu lobide lobi sahibi yok.') lobby.msg = '';
   renderLobby();
 }
 function lobbyLeave(silent){
   if (lobby.ch){ const ch = lobby.ch; lobby.ch = null; try { ch.untrack(); ch.unsubscribe(); NET.removeChannel(ch); } catch (_) {} }
-  Object.assign(lobby, {ch:null, code:null, role:null, peers:[], partner:null, ping:null, ready:false, pstate:null, subscribed:false});
+  Object.assign(lobby, {ch:null, code:null, role:null, peers:[], others:[], ping:null, ready:false, pstates:{}, subscribed:false});
   if (!silent) lobby.msg = '';
   renderLobby(); renderSubs();
 }
@@ -2395,13 +3019,14 @@ function renderLobby(){
   $('lb-role').textContent = lobby.role === 'host'
     ? 'Lobi sahibi sensin. Bölümü sen seçersin, ilerleme senin hesabına yazılır.'
     : 'Misafirsin. Bölümü lobi sahibi seçer. Sen altın ve eşya kazanırsın, ilerleme onun hesabına yazılır.';
-  const pt = lobby.partner;
-  $('lb-partner').innerHTML = pt
-    ? `<b>${esc(pt.nick)}</b> · ${pt.cls ? CLASSES[pt.cls].ad : 'Class yok'} · ${esc(pt.wpn)} · ilerleme ${pt.prog ? pt.prog.c + '-' + pt.prog.s : '?'} · ${pt.ready ? '<span class="okc">hazır</span>' : '<span class="dim">hazır değil</span>'}`
-    : '<span class="dim">Arkadaşının katılması bekleniyor. Kodu ona gönder.</span>';
-  $('lb-ping').textContent = lobby.ping != null ? `ping ${lobby.ping} ms` : (pt ? 'ping ölçülüyor…' : '');
+  const os = lobby.others, free = LOBBY_MAX - 1 - os.length;
+  $('lb-partner').innerHTML = os.length
+    ? os.map(pt => `<span class="lbp"><i class="lbdot" style="background:${partnerCol(pt.nick)}"></i><b>${esc(pt.nick)}</b>${pt.role === 'host' ? ' <span class="dim">(lobi sahibi)</span>' : ''} · ${pt.cls ? CLASSES[pt.cls].ad : 'Class yok'} · ${esc(pt.wpn)} · ilerleme ${pt.prog ? pt.prog.c + '-' + pt.prog.s : '?'} · ${pt.ready ? '<span class="okc">hazır</span>' : '<span class="dim">hazır değil</span>'}</span>`).join('')
+      + (free > 0 ? `<span class="dim lbp">${free} kişilik yer daha var.</span>` : '')
+    : `<span class="dim">Arkadaşlarının katılması bekleniyor. Kodu onlara gönder. Lobiye en fazla ${LOBBY_MAX} kişi girebilir.</span>`;
+  $('lb-ping').textContent = lobby.ping != null ? `ping ${lobby.ping} ms` : (os.length ? 'ping ölçülüyor…' : '');
   const rb = $('lb-ready'); rb.textContent = lobby.ready ? 'Hazır değilim' : 'Hazırım'; rb.setAttribute('aria-pressed', String(lobby.ready));
-  const sb = $('lb-start'); sb.hidden = lobby.role !== 'host'; sb.disabled = !(pt && pt.ready && lobby.ready) || runLocked();
+  const sb = $('lb-start'); sb.hidden = lobby.role !== 'host'; sb.disabled = !(os.length && os.every(o => o.ready) && lobby.ready) || runLocked();
   $('lb-sel').textContent = `${sel.c}-${sel.s} · ${CHAPTERS[sel.c - 1].ad}`;
 }
 $('lb-create').addEventListener('click', () => lobbyJoin(lobbyCode(), 'host'));
@@ -2409,7 +3034,7 @@ $('lb-join-form').addEventListener('submit', ev => { ev.preventDefault(); lobbyJ
 $('lb-leave').addEventListener('click', () => lobbyLeave());
 $('lb-ready').addEventListener('click', () => { lobby.ready = !lobby.ready; lobbyTrack(); renderLobby(); });
 $('lb-start').addEventListener('click', () => {
-  if (lobby.role !== 'host' || !lobby.partner || !lobby.partner.ready || !lobby.ready || runLocked()) return;
+  if (lobby.role !== 'host' || !lobby.others.length || !lobby.others.every(o => o.ready) || !lobby.ready || runLocked()) return;
   lobbySend('start', {c:sel.c, s:sel.s}); newRun();
 });
 $('lb-copy').addEventListener('click', () => {
@@ -2423,16 +3048,26 @@ function lobbyTick(now){
     lobby.sendT = now;
     const p = S.p;
     lobbySend('p', {x:Math.round(p.x), y:Math.round(p.y), vx:Math.round(p.vx), vy:Math.round(p.vy), f:p.face, hp:Math.ceil(p.hp), mx:p.st.maxHp,
-      b:p.blocking ? 1 : 0, d:S.t < p.dodgeUntil ? 1 : 0, a:S.t - p.atkT < .17 ? 1 : 0, lv:attKey(), n:acct.name});
+      b:p.blocking ? 1 : 0, d:S.t < p.dodgeUntil ? 1 : 0, a:S.t - p.atkT < .17 ? 1 : 0, dn:p.dead ? 1 : 0, rs:p.dead ? Math.ceil(p.respawnAt - S.t) : 0, lv:attKey(), n:acct.name});
   }
 }
 function drawPartner(){
-  const ps = lobby.pstate; if (!ps || !lobby.ch || S.mode === 'title') return;
+  if (!lobby.ch || S.mode === 'title') return;
+  for (const ps of Object.values(lobby.pstates)) drawMate(ps);
+}
+function drawMate(ps){
   const age = (performance.now() - ps.rx) / 1000;
   if (age > 1.5 || ps.lv !== attKey()) return;
+  const col = partnerCol(ps.n);
+  if (ps.dn){
+    ctx.globalAlpha = .45; ctx.fillStyle = col; rr(ps.x - 9, ps.y - 22, 18, 22, 6); ctx.fill(); ctx.globalAlpha = 1;
+    ctx.textAlign = 'center'; ctx.font = `600 12px ${F_BODY}`; ctx.fillStyle = col;
+    ctx.fillText(`${ps.n} düştü · ${ps.rs || ''}`, ps.x, ps.y - 30);
+    return;
+  }
   const k = Math.min(age, .1), x = ps.x + ps.vx * k, y = Math.min(FLOOR, ps.y + ps.vy * k);
   ctx.globalAlpha = .78;
-  drawBodyShape(x, y, ps.d ? C.frost : PARTNER_COL);
+  drawBodyShape(x, y, ps.d ? C.frost : col);
   ctx.globalAlpha = 1;
   ctx.fillStyle = C.pit; ctx.fillRect(x + ps.f * 3 - 1.5, y - 40, 3, 3);
   if (ps.b){ ctx.fillStyle = C.stoneHi; rr(x + ps.f * 16 - 5, y - 46, 10, 40, 3); ctx.fill(); }
@@ -2441,9 +3076,9 @@ function drawPartner(){
     if (ps.f > 0) ctx.arc(x + 4, y - 26, 40, -1.1, .7); else ctx.arc(x - 4, y - 26, 40, Math.PI + 1.1, Math.PI - .7, true);
     ctx.stroke();
   }
-  ctx.textAlign = 'center'; ctx.font = `600 12px ${F_BODY}`; ctx.fillStyle = PARTNER_COL;
+  ctx.textAlign = 'center'; ctx.font = `600 12px ${F_BODY}`; ctx.fillStyle = col;
   ctx.fillText(ps.n || 'Arkadaş', x, y - 60);
-  bar(x - 18, y - 56, 36, 4, ps.hp / Math.max(1, ps.mx), PARTNER_COL);
+  bar(x - 18, y - 56, 36, 4, ps.hp / Math.max(1, ps.mx), col);
 }
 
 /* ---------- döngü ---------- */
