@@ -1,0 +1,2476 @@
+/* ===================== PROLAR MOTORU ===================== */
+(() => {
+'use strict';
+
+const W = 960, H = 540, FLOOR = 480, WALL = 24;
+const G = 2200, RUN = 270, ACC = 2600, JUMP = 820;
+const DODGE_SPEED = 640, DODGE_DUR = .19, STEP = 1 / 120;
+const rowOf = y => y > 372 ? 1 : y > 262 ? 2 : 3;
+const ROW_BAND = {1:[372, FLOOR], 2:[262, 372], 3:[56, 262]};
+const ROW_Y = {1:FLOOR, 2:370, 3:260};
+const DEF = {tell:300, speed:1400, iframe:300, cd:650};
+const LIM = {tell:[120,500], speed:[900,2400], iframe:[120,420], cd:[300,1300]};
+const RM = window.matchMedia ? matchMedia('(prefers-reduced-motion: reduce)') : {matches:false};
+const SHOT = {
+  spear:  {shape:'line', len:86, tipF:.55, gap:14, speed:1},
+  arrow:  {shape:'line', len:38, tipF:.5,  gap:8,  speed:.7},
+  shard:  {shape:'line', len:28, tipF:.5,  gap:7,  speed:.65},
+  bullet: {shape:'line', len:16, tipF:.5,  gap:5,  speed:.85},
+  orb:    {shape:'orb',  r:9, speed:.48}
+};
+const MOB_SHOT_SPEED = {arrow:950, shard:900, bullet:1150, orb:620, spear:1100};
+
+const css = getComputedStyle(document.documentElement);
+const tok = n => css.getPropertyValue(n).trim();
+const C = {
+  night:tok('--night'), pit:tok('--pit'), stone:tok('--stone'), stoneHi:tok('--stone-hi'),
+  bone:tok('--bone'), dust:tok('--dust'), ember:tok('--ember'), blood:tok('--blood'),
+  frost:tok('--frost'), rust:tok('--rust')
+};
+const F_DISPLAY = '"Grenze Gotisch", Georgia, serif';
+const F_BODY = '"Barlow", "Segoe UI", system-ui, sans-serif';
+const F_MONO = '"JetBrains Mono", ui-monospace, monospace';
+
+function rgba(hex, a){ const n = parseInt(hex.replace('#',''), 16); return `rgba(${(n>>16)&255},${(n>>8)&255},${n&255},${a})`; }
+const rand = (a,b) => a + Math.random() * (b - a);
+const clamp = (v,a,b) => v < a ? a : v > b ? b : v;
+const ov = (a,b) => a.l < b.r && a.r > b.l && a.t < b.b && a.b > b.t;
+const inRect = (x, y, r) => x >= r.l && x <= r.r && y >= r.t && y <= r.b;
+const circRect = (x, y, rad, r) => { const cx = clamp(x, r.l, r.r), cy = clamp(y, r.t, r.b); return (x - cx) ** 2 + (y - cy) ** 2 <= rad * rad; };
+const elCol = el => el && EL[el] ? EL[el].col : '#c9c0b0';
+const elAd = el => el && EL[el] ? EL[el].ad : 'Fiziksel';
+const esc = s => String(s).replace(/[&<>"]/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[ch]));
+
+/* ---------- kayıt (tarayıcıya özel) ---------- */
+const store = {
+  get(k, d){ try { const v = localStorage.getItem(k); return v == null ? d : JSON.parse(v); } catch(_) { return d; } },
+  set(k, v){ try { localStorage.setItem(k, JSON.stringify(v)); } catch(_) {} }
+};
+const set = Object.assign({}, DEF);
+const savedSet = store.get('prolar.set2', {});
+for (const k in DEF) if (typeof savedSet[k] === 'number') set[k] = clamp(savedSet[k], LIM[k][0], LIM[k][1]);
+let att = store.get('prolar.att3', {}); if (!att || typeof att !== 'object') att = {};
+let sel = store.get('prolar.sel', {c:1, s:1});
+if (!sel || !(sel.c >= 1 && sel.c <= 10) || !(sel.s >= 1 && sel.s <= 50)) sel = {c:1, s:1};
+let showBoxes = false;
+const QUICK_WEAPON = {okcu:'yay', suikastci:'hancer', tank:'kalkan', buyucu:'simsek'};
+function quickSet(cls, tier){
+  const e = {};
+  for (const sl of ARMOR_SLOTS) e[sl] = `a-${cls}-${sl}-${tier}`;
+  e.silah = `w-${QUICK_WEAPON[cls]}-${tier}`; e.kolye = `k-${tier}`; e.yuzuk = `y-guc-${tier}`;
+  return e;
+}
+/* ---------- hesap ve profil ----------
+   Profil sunucuda (ya da çevrimdışıysa bu tarayıcıda) tutulur: altın, envanter (sınırsız, yığılabilir),
+   kuşanılanlar, açılan bölümler, temizlenen bölümler, market durumu. */
+let acct = null;          // {token, id, name, admin, offline}
+let adminView = false;    // sadece admin hesabında: bütün eşyalar ve bölümler açık
+const lobby = {ch:null, code:null, role:null, peers:[], partner:null, ping:null, ready:false, pstate:null, msg:'', joinedAt:0, sendT:0};
+const defaultProfile = () => ({v:1, gold:0, inv:{}, equip:{}, prog:{c:1, s:1}, cleared:{}, bossFirst:{}, shop:null, kills:0});
+let prof = defaultProfile();
+let equip = prof.equip;
+function cleanProfile(p){
+  const o = Object.assign(defaultProfile(), p && typeof p === 'object' ? p : {});
+  o.gold = Math.max(0, Math.floor(+o.gold || 0));
+  const inv = {}; for (const [k, v] of Object.entries(o.inv || {})) if (ITEM_BY_ID[k] && v > 0) inv[k] = Math.floor(v);
+  o.inv = inv;
+  const eq = {}; for (const sl of SLOTS){ const id = (o.equip || {})[sl]; if (id && ITEM_BY_ID[id] && ITEM_BY_ID[id].slot === sl && inv[id]) eq[sl] = id; }
+  o.equip = eq;
+  if (!o.prog || !(o.prog.c >= 1 && o.prog.c <= 10) || !(o.prog.s >= 1 && o.prog.s <= 50)) o.prog = {c:1, s:1};
+  if (!o.cleared || typeof o.cleared !== 'object') o.cleared = {};
+  if (!o.bossFirst || typeof o.bossFirst !== 'object') o.bossFirst = {};
+  return o;
+}
+function setProfile(p){ prof = cleanProfile(p); equip = prof.equip; }
+const owned = id => adminView || (prof.inv[id] || 0) > 0;
+const unlocked = (c, s) => adminView || c < prof.prog.c || (c === prof.prog.c && s <= prof.prog.s);
+const attKey = () => `${sel.c}-${sel.s}`;
+
+/* ---------- karakter istatistikleri (seviye senkronu dahil) ---------- */
+function itemNums(it, tier){
+  const T = TF(tier), n = {};
+  if (it.slot === 'silah'){ const w = WEAPONS[it.weapon]; n.dmg = w.dmg * T * (it.rare ? 1.35 : 1); n.cd = w.cd; }
+  else if (it.jewel === 'muska'){ n.hp = 8 * T * (it.res ? 1 : 2); if (it.res) n.res = .25; }
+  else if (it.jewel === 'guc'){ n.dmgP = .12; }
+  else if (it.jewel === 'ceviklik'){ n.spdP = .08; n.dodgeMs = 20; }
+  else { n.hp = 15 * T; if (it.res) n.res = .08; }
+  return n;
+}
+function derive(lobbyC){
+  const st = {maxHp:50, dmgMul:1, dodgeMs:0, reduce:0, cdMul:1, speedMul:1, res:{}, weapon:null, wTier:1,
+              setCls:null, setCount:{}, synced:0, bowDmgMul:1, bowCdMul:1, backstab:2, parryWin:.18};
+  for (const sl of SLOTS){
+    const it = ITEM_BY_ID[equip[sl]]; if (!it) continue;
+    const eff = Math.min(it.tier, lobbyC); if (it.tier > lobbyC) st.synced++;
+    const n = itemNums(it, eff);
+    if (it.slot === 'silah'){ st.weapon = it; st.wTier = eff; continue; }
+    if (n.hp) st.maxHp += n.hp;
+    if (n.res && it.res) st.res[it.res] = (st.res[it.res] || 0) + n.res;
+    if (n.dmgP) st.dmgMul += n.dmgP;
+    if (n.spdP) st.speedMul += n.spdP;
+    if (n.dodgeMs) st.dodgeMs += n.dodgeMs;
+    if (ARMOR_SLOTS.includes(it.slot)){
+      st.setCount[it.cls] = (st.setCount[it.cls] || 0) + 1;
+      if (it.cls === 'okcu') st.dmgMul += .05;
+      else if (it.cls === 'suikastci') st.dodgeMs += 15;
+      else if (it.cls === 'tank') st.reduce += .04;
+      else if (it.cls === 'buyucu') st.cdMul -= .05;
+    }
+  }
+  for (const k in st.setCount) if (st.setCount[k] >= 4) st.setCls = k;
+  if (st.setCls === 'okcu'){ st.bowDmgMul = 1.2; st.bowCdMul = .8; }
+  if (st.setCls === 'suikastci'){ st.dodgeMs += 80; st.backstab = 3; }
+  if (st.setCls === 'tank'){ st.reduce += .2; st.parryWin = .28; }
+  if (st.setCls === 'buyucu'){ st.cdMul -= .25; }
+  st.reduce = Math.min(.6, st.reduce); st.cdMul = Math.max(.45, st.cdMul);
+  for (const k in st.res) st.res[k] = Math.min(.6, st.res[k]);
+  st.maxHp = Math.round(st.maxHp);
+  st.wd = st.weapon ? WEAPONS[st.weapon.weapon] : FIST;
+  st.def = DEFENSE[st.wd.kind];
+  st.wEl = st.weapon ? st.weapon.el : null;
+  st.dmg = st.wd.dmg * (st.weapon ? TF(st.wTier) * (st.weapon.rare ? 1.35 : 1) : 1) * st.dmgMul * (st.wd.kind === 'bow' ? st.bowDmgMul : 1);
+  st.atkCd = st.wd.cd * (st.wd.kind === 'bow' ? st.bowCdMul : 1) * (st.wd.kind === 'staff' ? st.cdMul : 1);
+  if (st.def.blink){ st.dodgeCd = st.def.blinkCd * st.cdMul; st.ifr = 150; st.dodgeDur = 0; }
+  else { st.dodgeCd = set.cd / 1000 * st.def.cdMul; st.ifr = Math.max(80, set.iframe + st.def.ifrAdd + st.dodgeMs); st.dodgeDur = DODGE_DUR * st.def.distMul; }
+  return st;
+}
+
+/* ---------- arayüz öğeleri ---------- */
+const $ = id => document.getElementById(id);
+const cv = $('game');
+const ctx = cv.getContext('2d');
+
+const SL = [
+  ['tell', 's-tell', 'o-tell', v => v + ' ms'],
+  ['speed', 's-speed', 'o-speed', v => v + ' px/sn'],
+  ['iframe', 's-iframe', 'o-iframe', v => v + ' ms'],
+  ['cd', 's-cd', 'o-cd', v => v + ' ms']
+];
+for (const [k, id] of SL){
+  $(id).addEventListener('input', ev => { set[k] = +ev.target.value; store.set('prolar.set2', set); onGearChange(); });
+}
+$('b-reset').addEventListener('click', () => { Object.assign(set, DEF); store.set('prolar.set2', set); onGearChange(); });
+$('s-boxes').addEventListener('change', ev => { showBoxes = ev.target.checked; });
+$('b-att').addEventListener('click', () => { att[attKey()] = 0; store.set('prolar.att3', att); syncUI(); });
+
+/* bölüm seçici */
+const chapEl = $('chapters'), subsEl = $('subs'), infoEl = $('lvinfo');
+chapEl.innerHTML = CHAPTERS.map((ch, i) => `<button type="button" class="chap" data-c="${i + 1}"><span>${i + 1}</span>${esc(ch.ad)}</button>`).join('');
+const mapLocked = () => runLocked() || lobby.role === 'guest';
+chapEl.addEventListener('click', ev => {
+  const b = ev.target.closest('.chap'); if (!b || mapLocked()) return;
+  const c = +b.dataset.c; if (!unlocked(c, 1)) return;
+  selectLevel(c, !adminView && c === prof.prog.c ? prof.prog.s : 1);
+});
+subsEl.addEventListener('click', ev => {
+  const b = ev.target.closest('.sub'); if (!b || mapLocked()) return;
+  selectLevel(sel.c, +b.dataset.s);
+});
+function renderSubs(){
+  let h = '';
+  const lockAll = mapLocked();
+  for (let s = 1; s <= 50; s++){
+    const cls = (s === 50 ? ' boss' : s === 25 ? ' mini' : '') + (prof.cleared[`${sel.c}-${s}`] ? ' done' : '');
+    const open = unlocked(sel.c, s);
+    h += `<button type="button" class="sub${cls}" data-s="${s}" aria-pressed="${s === sel.s}" title="${sel.c}-${s}${open ? '' : ' · kilitli'}"${open && !lockAll ? '' : ' disabled'}>${open ? '' : '<i class="lk"></i>'}${sel.c}-${s}</button>`;
+  }
+  subsEl.innerHTML = h;
+  for (const b of chapEl.querySelectorAll('.chap')){
+    const c = +b.dataset.c;
+    b.setAttribute('aria-pressed', String(c === sel.c));
+    b.disabled = lockAll || !unlocked(c, 1);
+  }
+}
+function selectLevel(c, s, fromHost){
+  if (!fromHost && (lobby.role === 'guest' || !unlocked(c, s))) return;
+  sel = {c, s}; store.set('prolar.sel', sel);
+  if (adminView) fTier = c;
+  S = makeState('title'); paused = false;
+  renderSubs(); syncUI(); renderBag();
+  if (lobby.role === 'host') lobbySend('lvl', {c, s});
+}
+
+/* envanter */
+let fCls = 'all', fSlot = 'all', fTier = 'all';
+const slotsEl = $('slots'), statsEl = $('stats'), itemsEl = $('items'), bagEl = $('bag-wrap'), lockEl = $('inv-lock');
+const fClsEl = $('f-cls'), fSlotEl = $('f-slot'), fTierEl = $('f-tier');
+fClsEl.innerHTML = [['all','Tümü'], ...Object.entries(CLASSES).map(([k, v]) => [k, v.ad]), ['taki','Takı']]
+  .map(([k, a]) => `<option value="${k}">${esc(a)}</option>`).join('');
+fSlotEl.innerHTML = [['all','Tüm yuvalar'], ...SLOTS.map(s => [s, SLOT_AD[s]])].map(([k, a]) => `<option value="${k}">${esc(a)}</option>`).join('');
+fTierEl.innerHTML = [['all','Tüm bölümler'], ...CHAPTERS.map((ch, i) => [String(i + 1), `B${i + 1} · ${ch.ad}`])].map(([k, a]) => `<option value="${k}">${esc(a)}</option>`).join('');
+fClsEl.addEventListener('change', () => { fCls = fClsEl.value; renderBag(); });
+fSlotEl.addEventListener('change', () => { fSlot = fSlotEl.value; renderBag(); });
+fTierEl.addEventListener('change', () => { fTier = fTierEl.value === 'all' ? 'all' : +fTierEl.value; renderBag(); });
+$('quick').addEventListener('click', ev => {
+  const b = ev.target.closest('[data-q]'); if (!b || runLocked() || !adminView) return;
+  const tier = fTier === 'all' ? sel.c : fTier;
+  prof.equip = equip = quickSet(b.dataset.q, tier); markDirty(); onGearChange();
+});
+itemsEl.addEventListener('click', ev => {
+  const b = ev.target.closest('[data-act]'); if (!b || runLocked()) return;
+  const it = ITEM_BY_ID[b.closest('.item').dataset.id]; if (!it) return;
+  if (b.dataset.act === 'equip'){
+    if (!owned(it.id)) return;
+    if (equip[it.slot] === it.id) delete equip[it.slot]; else equip[it.slot] = it.id;
+    markDirty(); onGearChange();
+  } else if (b.dataset.act === 'sell') sellItem(it, 1);
+});
+slotsEl.addEventListener('click', ev => {
+  const b = ev.target.closest('[data-unequip]'); if (!b || runLocked()) return;
+  delete equip[b.dataset.unequip]; markDirty(); onGearChange();
+});
+$('b-selldup').addEventListener('click', () => {
+  if (runLocked() || adminView) return;
+  let n = 0, g = 0;
+  for (const [id, cnt] of Object.entries(prof.inv)) if (cnt > 1){ const it = ITEM_BY_ID[id]; g += SELL(it) * (cnt - 1); n += cnt - 1; prof.inv[id] = 1; }
+  if (!n){ flash('Satılacak kopya yok.'); return; }
+  prof.gold += g; markDirty(); flash(`${n} kopya satıldı, +${g} altın.`); onGearChange(); renderMarket();
+});
+/* class'a uymayanları sat: kuşandığın silahın class'ı dışındaki zırh ve silahlar. Takılar, nadirler ve kuşanılanlar kalır.
+   Yanlışlıkla basılmasın diye ilk tıkta onay ister. */
+let sellArmT = 0;
+$('b-sellcls').addEventListener('click', ev => {
+  if (runLocked() || adminView) return;
+  const b = ev.currentTarget, my = derive(sel.c).wd.cls;
+  if (!my){ flash('Önce bir silah kuşan. Class\'ını silahın belirler.'); return; }
+  const keep = new Set(Object.values(equip));
+  const list = Object.entries(prof.inv).filter(([id]) => { const it = ITEM_BY_ID[id]; return it.cls && it.cls !== my && !it.rare && !keep.has(id); });
+  if (!list.length){ flash(`${CLASSES[my].ad} dışında satılacak eşya yok.`); return; }
+  const n = list.reduce((a, [, c]) => a + c, 0), g = list.reduce((a, [id, c]) => a + SELL(ITEM_BY_ID[id]) * c, 0);
+  if (!b.dataset.arm){
+    b.dataset.arm = '1'; b.textContent = `${n} eşyayı ${g} altına sat? Onaylamak için tekrar bas`;
+    clearTimeout(sellArmT); sellArmT = setTimeout(() => { delete b.dataset.arm; b.textContent = 'Class\'ıma uymayanları sat'; }, 4000);
+    return;
+  }
+  clearTimeout(sellArmT); delete b.dataset.arm; b.textContent = 'Class\'ıma uymayanları sat';
+  for (const [id] of list) delete prof.inv[id];
+  prof.gold += g; markDirty(); flash(`${n} eşya satıldı, +${g} altın.`); onGearChange(); renderMarket();
+});
+function sellItem(it, n){
+  if (adminView) return;
+  const have = prof.inv[it.id] || 0, keep = Object.values(equip).includes(it.id) ? 1 : 0;
+  const k = Math.min(n, have - keep);
+  if (k <= 0){ flash('Kuşandığın son kopyayı satamazsın. Önce çıkar.'); return; }
+  prof.inv[it.id] = have - k; if (!prof.inv[it.id]) delete prof.inv[it.id];
+  const g = SELL(it) * k; prof.gold += g;
+  markDirty(); flash(`${it.ad} satıldı, +${g} altın.`); onGearChange(); renderMarket();
+}
+function itemLine(it, tier){
+  const n = itemNums(it, tier), parts = [];
+  if (it.slot === 'silah'){
+    const w = WEAPONS[it.weapon];
+    if (n.dmg) parts.push(`Hasar ${Math.round(n.dmg)}`);
+    parts.push(`${w.cd} sn`);
+  } else {
+    if (n.hp) parts.push(`Can +${Math.round(n.hp)}`);
+    if (ARMOR_SLOTS.includes(it.slot)) parts.push(CLASSES[it.cls].parca);
+    if (n.res && it.res) parts.push(`${elAd(it.res)} direnci %${Math.round(n.res * 100)}`);
+    if (n.dmgP) parts.push(`+%${Math.round(n.dmgP * 100)} hasar`);
+    if (n.spdP) parts.push(`+%${Math.round(n.spdP * 100)} hız, +${n.dodgeMs} ms dodge`);
+  }
+  return parts.join(' · ');
+}
+/* etki etiketleri: [ikon, yazı, açıklama, ton] */
+const FX_TAGS = {
+  single:[['single', 'Tek hedef', 'Tek düşmana vurur. Bosslara karşı iyi.', 'off']],
+  aoe:[['aoe', 'Alan hasarı', 'Çarptığı yerin çevresindeki herkese vurur. Kalabalıkta iyi, tek bossa zayıf.', 'off']],
+  pierce:[['pierce', 'Delip geçer', 'Ok yolundaki bütün düşmanlardan geçer.', 'off']],
+  poison:[['poison', 'Zehir', '3 sn boyunca zehir hasarı verir.', 'off'], ['aoe', 'Yayılır', 'Zehir yakındaki düşmanlara da bulaşır.', 'off']],
+  stun:[['stun', 'Sersemletir', 'Mobları 1,2 sn durdurur. Bosslara işlemez.', 'util'], ['aoe', 'Alan hasarı', 'İmlecin çevresindeki herkese çarpar.', 'off']],
+  slow:[['slow', 'Yavaşlatır', 'Düşmanı ve hazırlık sürelerini 2 sn yavaşlatır.', 'util']],
+  heal:[['heal', 'İyileştirir', 'Canının %25\'ini yeniler.', 'def']],
+  barrier:[['barrier', 'Bariyer', 'Bir sonraki vuruşu tamamen emer.', 'def']]
+};
+const KIND_TAGS = {
+  bow:[['ranged', 'Menzilli', 'Mouse ile elle nişan alırsın, her tıkta bir ok.', 'util'], ['dodge', 'Güçlü dodge', 'Daha uzun ve daha hızlı yenilenen dodge.', 'def']],
+  staff:[['ranged', 'Menzilli', 'Mouse ile elle nişan alırsın, her tıkta bir büyü.', 'util'], ['blink', 'Işınlanma', 'Dodge yerine imlecin olduğu yere ışınlanırsın.', 'def']],
+  dagger:[['melee', 'Yakın dövüş', 'Kısa menzil.', 'util'], ['backstab', 'Arkadan ×2', 'Düşmanın arkasından vurursan iki kat hasar. Suikastçı setiyle ×3.', 'off'], ['dodge', 'Uzun dodge', 'Dokunulmazlığı en uzun dodge.', 'def']],
+  shield:[['melee', 'Yakın dövüş', 'Orta menzil.', 'util'], ['block', 'Blok ve parry', 'Sağ tık basılıyken önden gelen ok ve vuruşları bloklar. Tam zamanında basarsan parry.', 'def'], ['dodge', 'Zayıf dodge', 'Kısa ve geç yenilenen dodge.', 'weak']],
+  hammer:[['melee', 'Yakın dövüş', 'Geniş ve yavaş vuruş.', 'util'], ['shieldbreak', 'Kalkan deler', 'Kalkanlı düşmanların bloğunu deler.', 'off'], ['dodge', 'Zayıf dodge', 'Kısa ve geç yenilenen dodge, kalkan yok.', 'weak']]
+};
+const PART_TAG = {okcu:['dmg', '+%5 hasar', 'off'], suikastci:['dodge', '+15 ms dodge', 'def'], tank:['armor', '-%4 alınan hasar', 'def'], buyucu:['cd', '-%5 bekleme', 'util']};
+function itemTags(it){
+  const tags = [];
+  const add = (k, label, title, tone, el) => tags.push({k, label, title, tone, el});
+  if (it.slot === 'silah'){
+    const w = WEAPONS[it.weapon];
+    for (const t of FX_TAGS[w.fx]) add(...t);
+    for (const t of KIND_TAGS[w.kind]) add(...t);
+    if (it.el){
+      const strong = CHAPTERS.map((c, i) => c.weak === it.el ? `${i + 1}. ${c.ad}` : null).filter(Boolean);
+      add('el', elAd(it.el), `${elAd(it.el)} elementi. Zayıf düşmana ×1,5, aynı elementteki düşmana ×0,5.${strong.length ? ' En güçlü olduğu yer: ' + strong.join(', ') + '.' : ''}`, 'el', it.el);
+    }
+  } else {
+    const n = itemNums(it, it.tier);
+    if (n.hp) add('hp', `Can +${Math.round(n.hp)}`, 'Maksimum canını artırır.', 'def');
+    if (ARMOR_SLOTS.includes(it.slot)){ const P = PART_TAG[it.cls]; add(P[0], P[1], 'Bu parçanın class bonusu.', P[2]); }
+    if (n.res && it.res) add('resist', `${elAd(it.res)} direnci %${Math.round(n.res * 100)}`, `${elAd(it.res)} elementli saldırılardan daha az hasar alırsın.`, 'el', it.res);
+    if (n.dmgP) add('dmg', `+%${Math.round(n.dmgP * 100)} hasar`, 'Bütün hasarını artırır.', 'off');
+    if (n.spdP){ add('speed', `+%${Math.round(n.spdP * 100)} hız`, 'Koşu hızını artırır.', 'util'); add('dodge', `+${n.dodgeMs} ms dodge`, 'Dodge korumasını uzatır.', 'def'); }
+    if (ARMOR_SLOTS.includes(it.slot)) add('set', `${CLASSES[it.cls].ad} seti`, `4 parça kuşanınca: ${CLASSES[it.cls].set}`, 'util');
+  }
+  return tags;
+}
+const tagsHTML = tags => tags.map(t => `<span class="tg tg-${t.tone}"${t.el ? ` style="--c:${elCol(t.el)}"` : ''} title="${esc(t.title || t.label)}">${tagSVG(t.k)}${esc(t.label)}</span>`).join('');
+function renderBag(){
+  fClsEl.value = fCls; fSlotEl.value = fSlot; fTierEl.value = String(fTier);
+  const list = ITEMS.filter(it => owned(it.id) &&
+    (fCls === 'all' || (fCls === 'taki' ? !it.cls : it.cls === fCls)) &&
+    (fSlot === 'all' || it.slot === fSlot) &&
+    (fTier === 'all' || it.tier === fTier));
+  const shown = list.slice(0, 120);
+  const total = Object.values(prof.inv).reduce((a, b) => a + b, 0);
+  $('bag-count').textContent = adminView ? 'Admin görünümü: bütün eşyalar' : `${total} eşya, ${Object.keys(prof.inv).length} çeşit`;
+  $('b-selldup').hidden = adminView; $('b-sellcls').hidden = adminView;
+  $('quick').hidden = !adminView;
+  itemsEl.innerHTML = shown.map(it => itemCard(it, 'bag')).join('')
+    + (list.length > shown.length ? `<p class="more">${list.length - shown.length} eşya daha var. Filtreyi daralt.</p>` : '')
+    + (!list.length ? `<p class="more">${total ? 'Bu filtreye uyan eşyan yok. Filtreyi "Tüm bölümler" yap.' : 'Envanterin boş. Düşmanlar, bölüm sandıkları ve bosslar eşya düşürür, marketten de alabilirsin.'}</p>` : '');
+}
+function itemCard(it, where, extra){
+  const on = equip[it.slot] === it.id;
+  const cl = it.cls ? CLASSES[it.cls] : null;
+  const nums = it.slot === 'silah' ? `<span class="nums">${esc(itemLine(it, it.tier))}</span>` : '';
+  const cnt = prof.inv[it.id] || 0;
+  const rare = it.rare ? `<span class="rare">Nadir · sadece ${esc(it.from)} düşürür</span>` : '';
+  let acts = '';
+  if (where === 'bag'){
+    acts = `<button type="button" data-act="equip">${on ? 'Çıkar' : 'Kuşan'}</button>`
+      + (adminView ? '' : `<button type="button" data-act="sell" class="ghost">Sat · ${SELL(it)} altın</button>`);
+  } else if (where === 'shop'){
+    acts = extra.bought ? '<span class="dim">Satın alındı</span>'
+      : `<button type="button" data-buy="${extra.i}"${prof.gold < extra.price ? ' disabled' : ''}>Al · ${extra.price} altın</button>`;
+  }
+  return `<div class="item${on && where === 'bag' ? ' on' : ''}" data-id="${it.id}" title="${esc(it.slot === 'silah' ? WEAPONS[it.weapon].bilgi : it.ad)}">
+    <span class="ic">${itemIconSVG(it, 44)}${where === 'bag' && cnt > 1 && !adminView ? `<i class="cnt">×${cnt}</i>` : ''}</span>
+    <span class="tx"><b>${esc(it.ad)}</b>
+    <span class="meta">${SLOT_AD[it.slot]} · ${cl ? esc(cl.ad) : 'Takı'} · B${it.tier}${where === 'shop' && cnt ? ` · elinde ${cnt}` : ''}</span>${rare}${nums}
+    <span class="tags">${tagsHTML(itemTags(it))}</span>
+    <span class="acts">${acts}</span></span></div>`;
+}
+function renderEquip(){
+  const st = derive(sel.c);
+  slotsEl.innerHTML = SLOTS.map(sl => {
+    const it = ITEM_BY_ID[equip[sl]];
+    if (!it) return `<li><span class="sl">${SLOT_AD[sl]}</span><span class="sic empty-ic"></span><span class="empty">Boş${sl === 'silah' ? ' (yumruk)' : ''}</span></li>`;
+    const sync = it.tier > sel.c ? `<em class="sync">B${it.tier} → B${sel.c}</em>` : `<em>B${it.tier}</em>`;
+    return `<li><span class="sl">${SLOT_AD[sl]}</span><span class="sic">${itemIconSVG(it, 30, true)}</span><span class="nm">${esc(it.ad)} ${sync}</span><button type="button" class="x" data-unequip="${sl}" aria-label="${esc(it.ad)} çıkar">Çıkar</button></li>`;
+  }).join('');
+  const sc = Object.entries(st.setCount).sort((a, b) => b[1] - a[1])[0];
+  const setTxt = st.setCls ? `<b class="ok">${CLASSES[st.setCls].ad} seti aktif:</b> ${esc(CLASSES[st.setCls].set)}`
+    : sc ? `${CLASSES[sc[0]].ad} seti ${sc[1]}/4. Dört zırh parçası aynı class'tan olunca açılır: ${esc(CLASSES[sc[0]].set)}` : 'Set yok. Aynı class\'tan dört zırh parçası kuşanınca set bonusu açılır.';
+  const res = Object.entries(st.res).map(([k, v]) => `<i class="chip" style="--c:${elCol(k)}">${esc(elAd(k))} %${Math.round(v * 100)}</i>`).join('') || '<span class="dim">yok</span>';
+  const d = st.def;
+  const defTxt = d.blink ? `Işınlanma, ${st.dodgeCd.toFixed(2)} sn bekleme, ${d.range} px menzil`
+    : `${d.ad}: ${st.ifr} ms koruma, ${st.dodgeCd.toFixed(2)} sn bekleme`;
+  const cls = st.wd.cls ? CLASSES[st.wd.cls].ad : 'Class yok';
+  statsEl.innerHTML = `
+    <dl>
+      <dt>Class</dt><dd>${esc(cls)} <span class="dim">(silaha göre)</span></dd>
+      <dt>Can</dt><dd>${st.maxHp}</dd>
+      <dt>Silah</dt><dd>${esc(st.weapon ? st.weapon.ad : 'Yumruk')}: ${st.wd.fx === 'heal' ? 'can yeniler' : st.wd.fx === 'barrier' ? 'kalkan basar' : `hasar ${Math.round(st.dmg)}`}, ${st.atkCd.toFixed(2)} sn${st.wEl ? ` <i class="chip" style="--c:${elCol(st.wEl)}">${esc(elAd(st.wEl))}</i>` : ''}</dd>
+      ${st.weapon ? `<dt>Etkiler</dt><dd class="tags">${tagsHTML(itemTags(st.weapon))}</dd>` : ''}
+      <dt>Savunma</dt><dd>${esc(defTxt)}</dd>
+      <dt>Hasar azaltma</dt><dd>%${Math.round(st.reduce * 100)}</dd>
+      <dt>Hız</dt><dd>%${Math.round(st.speedMul * 100)}</dd>
+      <dt>Dirençler</dt><dd>${res}</dd>
+    </dl>
+    <p class="set">${setTxt}</p>
+    ${st.synced ? `<p class="syncnote">${st.synced} eşyan ${sel.c}. bölümden yüksek. Bu bölümde taban güçleri ${sel.c}. bölüm seviyesine indirildi, element bonusları duruyor.</p>` : ''}`;
+}
+function runLocked(){ return S.mode === 'play'; }
+function syncUI(){
+  for (const [k, id, oid, fmt] of SL){ $(id).value = set[k]; $(oid).textContent = fmt(set[k]); }
+  $('win-note').innerHTML = `Süreler boss'un zıpladığı andan itibaren ölçülür. Atış <b>${set.tell} ms</b>'de geliyor. Dodge koruması silahına göre değişir, şu an <b>${S.p.st.ifr} ms</b>.`;
+  $('att').textContent = att[attKey()] || 0;
+  $('att-label').textContent = `${sel.c}-${sel.s} deneme sayısı`;
+  const L = S.L, ch = CHAPTERS[sel.c - 1];
+  const kindAd = L.kind === 'boss' ? 'Boss' : L.kind === 'mini' ? 'Mini boss' : 'Normal bölüm';
+  let body = '';
+  if (L.boss){
+    const b = BOSSES[L.boss];
+    body = `<b>${esc(b.ad)}</b>. Hamleleri: ${b.atk.map(a => ATK_AD[a]).join(', ')}.`;
+  } else {
+    const names = ch.mobs ? Object.values(ch.mobs).join(', ') : 'Önceki dünyalardan karışık düşmanlar';
+    body = `${L.waves.length} dalga, ${L.waves.reduce((a, w) => a + w.mobs.length, 0)} düşman. ${esc(names)}. Dizilimler: ${[...new Set(L.waves.map(w => FORMS[w.form].split(':')[0]))].join(', ')}.`;
+  }
+  const weak = ch.weak === 'mix' ? 'her düşmanda farklı' : ch.weak ? elAd(ch.weak) : 'yok';
+  const elT = ch.el === 'mix' ? 'karışık' : ch.el ? elAd(ch.el) : 'fiziksel';
+  const pc = v => '%' + String(Math.round(v * 1000) / 10).replace('.', ',');
+  const rare = RARE_BY_C[sel.c], rareIt = ITEM_BY_ID[rare.id];
+  const key = attKey(), first = !prof.cleared[key];
+  let loot;
+  if (L.boss){
+    const bf = !prof.bossFirst[L.boss];
+    loot = `Ganimet: kesin 1 eşya${bf ? ' (ilk zaferde class\'ına uygun silah)' : ''}, ${pc(L.kind === 'boss' ? DROP.bossExtra : DROP.miniExtra)} ihtimalle bir tane daha.`;
+  } else {
+    loot = `Ganimet: tank ${pc(DROP.mob.tank)}, menzilli ${pc(DROP.mob.ranged)}, koşucu ${pc(DROP.mob.runner)} (elitlerde ${String(DROP.eliteMul).replace('.', ',')} katı). `
+      + (key === '1-1' && first ? 'İlk temizlemede kesin bir silah. ' : `Bölüm sandığı ${pc(first ? DROP.chestFirst : DROP.chestRepeat)}${first ? ' (ilk temizleme)' : ''}. `)
+      + `Nadir: ${esc(rareIt.ad)}, ${esc(rareIt.from)} ${pc(DROP.rare)} (elit ${pc(DROP.rareElite)}).`;
+  }
+  const done = prof.cleared[key] ? ` <span class="okc">${prof.cleared[key]} kez temizlendi</span>` : '';
+  infoEl.innerHTML = `<span class="lvtag">${sel.c}-${sel.s} · ${kindAd}</span>${done} ${body} <span class="dim">Düşman elementi: ${elT}. Zayıflık: ${weak}. Tuzak: ${L.traps.length}.</span><br><span class="loot">${loot}</span>`;
+  const locked = runLocked();
+  for (const el of [bagEl, $('market')]){ el.toggleAttribute('inert', locked); el.classList.toggle('locked', locked); }
+  lockEl.hidden = !locked;
+  renderSubs();
+  renderEquip();
+  renderAcct();
+}
+function onGearChange(){
+  if (S.mode !== 'play') S = makeState('title');
+  syncUI(); renderBag();
+}
+
+/* ---------- boss atış kaydı ---------- */
+const logEl = $('log');
+const log = [];
+let spearNo = 0;
+const RES = {
+  perfect:['Mükemmel','r-ember'], dodged:['Kaçtın','r-frost'], parry:['Parry','r-ember'], blocked:['Blokladın','r-frost'], barrier:['Bariyer emdi','r-frost'],
+  'hit-early':['Erken bastın','r-blood'], 'hit-late':['Geç bastın','r-blood'],
+  'hit-none':['Basmadın','r-blood'], 'hit-cooldown':['Dodge beklemedeydi','r-blood'],
+  miss:['Iska','r-dust'], invuln:['Korumadaydın','r-dust']
+};
+const ms = v => v == null ? '—' : Math.round(v * 1000) + ' ms';
+function renderLog(){
+  if (!log.length){
+    logEl.innerHTML = '<tr class="empty"><td colspan="4">Henüz atış yok. Bir boss bölümü aç (x-25 ya da x-50). Boss zıplayıp attığında süreler burada görünür.</td></tr>';
+    return;
+  }
+  logEl.innerHTML = log.map(en => {
+    const [lab, cls] = en.result ? RES[en.result] : ['Uçuşta…', 'r-dust'];
+    let extra = '';
+    if (en.result === 'hit-late') extra = `<span class="d">isabetten ${Math.round(en.late * 1000)} ms sonra</span>`;
+    if (en.result === 'hit-early') extra = `<span class="d">koruma ${Math.round((en.press + en.ifr / 1000) * 1000)} ms'de bitti</span>`;
+    const hit = en.result === 'miss' ? '—' : ms(en.res);
+    return `<tr><td>${en.n}${en.hang ? '<span class="hang">bekledi</span>' : ''}</td><td>${hit}</td><td>${ms(en.press)}</td><td class="${cls}">${lab}${extra}</td></tr>`;
+  }).join('');
+}
+function logNew(){
+  const en = {n:++spearNo, jump:S.t, res:null, press:null, result:null, hang:false, late:null, cdPress:false, ifr:S.p.st.ifr};
+  log.unshift(en); if (log.length > 6) log.length = 6;
+  renderLog();
+  return en;
+}
+function resolveEntry(en, r){
+  if (!en || en.result) return;
+  en.res = S.t - en.jump; en.ifr = S.p.st.ifr;
+  if (r === 'hit'){
+    if (en.press != null && en.press + en.ifr / 1000 < en.res) en.result = 'hit-early';
+    else if (en.cdPress) en.result = 'hit-cooldown';
+    else { en.result = 'hit-none'; S.lastHit = en; }
+  } else en.result = r;
+  renderLog();
+}
+
+/* ---------- girdi ---------- */
+const keys = new Set(), pressed = new Set();
+const MAP = {
+  ArrowLeft:'left', KeyA:'left', ArrowRight:'right', KeyD:'right',
+  ArrowUp:'jump', KeyW:'jump', Space:'jump', ArrowDown:'down', KeyS:'down',
+  ShiftLeft:'dodge', ShiftRight:'dodge', KeyK:'dodge', KeyL:'dodge',
+  KeyJ:'attack', KeyX:'attack', KeyQ:'alt', KeyR:'restart', Enter:'confirm', Escape:'pause', KeyP:'pause', KeyM:'menu'
+};
+const mouse = {x:600, y:300};
+function isField(t){ return t && (t.tagName === 'INPUT' || t.tagName === 'BUTTON' || t.tagName === 'SUMMARY' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT'); }
+window.addEventListener('keydown', ev => {
+  if (isField(ev.target)) return;
+  const a = MAP[ev.code]; if (!a) return;
+  if (document.activeElement === cv || (S.mode === 'play' && !paused)) ev.preventDefault();
+  if (!ev.repeat) pressed.add(a);
+  keys.add(a);
+});
+window.addEventListener('keyup', ev => { const a = MAP[ev.code]; if (a) keys.delete(a); });
+function pauseIfPlaying(){ if (S.mode === 'play') paused = true; keys.clear(); }
+window.addEventListener('blur', pauseIfPlaying);
+cv.addEventListener('blur', pauseIfPlaying);
+function toGame(ev){ const r = cv.getBoundingClientRect(); mouse.x = (ev.clientX - r.left) / r.width * W; mouse.y = (ev.clientY - r.top) / r.height * H; }
+cv.addEventListener('pointermove', toGame);
+cv.addEventListener('pointerdown', ev => {
+  ev.preventDefault(); cv.focus(); toGame(ev);
+  try { cv.setPointerCapture(ev.pointerId); } catch(_) {}
+  if (S.mode !== 'play'){ if (ev.button === 0) newRun(); return; }
+  if (paused){ paused = false; return; }
+  if (ev.button === 0){ pressed.add('attack'); keys.add('attack'); }
+  if (ev.button === 2){ pressed.add('alt'); keys.add('alt'); }
+});
+const release = ev => { if (ev.button === 0) keys.delete('attack'); if (ev.button === 2) keys.delete('alt'); };
+cv.addEventListener('pointerup', release);
+window.addEventListener('pointerup', release);
+cv.addEventListener('contextmenu', ev => ev.preventDefault());
+
+/* ---------- oyun durumu ---------- */
+function makeBoss(L){
+  const def = BOSSES[L.boss], ch = CHAPTERS[L.c - 1], f = TF(L.c) * SF(L.s);
+  const hp = Math.round(def.hp * f);
+  return {def, isBoss:true, x:740, y:FLOOR, vx:0, vy:0, w:def.w, h:def.h, face:-1, grounded:true, hp, max:hp, shown:hp,
+    phase:1, state:'idle', st:0, ck:0, dur:1.1, farT:0, flash:0, held:true, last:null, rep:0, hangDone:false, cur:null,
+    hitDone:false, rows:[], rowHit:false, rowDodged:false, leapX:0, chargeDir:1, volleyN:3,
+    el:ch.el === 'mix' ? null : ch.el, weak:def.weak1 || (ch.weak === 'mix' ? null : ch.weak),
+    dmgF:f, slowUntil:-9, stunUntil:-9, poisonUntil:-9, poisonDps:0, poisonTick:0, lastHitT:-9, pal:ch.pal};
+}
+function makeState(mode){
+  const L = levelDef(sel.c, sel.s);
+  const st = derive(sel.c);
+  const s = {
+    mode, L, ch:CHAPTERS[sel.c - 1], plats:L.layout, traps:L.traps, t:0, hitstop:0, shake:0, flashT:-9, banner:null,
+    dodged:0, lastHit:null, trapHit:L.traps.map(() => false), gold:0, wave:0, waveT:0, kills:0,
+    p:{x:L.boss ? 220 : 480, y:FLOOR, vx:0, vy:0, w:26, h:46, face:1, grounded:true, st, hp:st.maxHp,
+       coyote:0, jumpBuf:-9, dodgeT:-9, dodgeUntil:-9, ifrUntil:-9, dodgeDir:1, hurtUntil:-9, stunUntil:-9,
+       atkT:-9, atkId:0, altT:-9, dropUntil:-9, blocking:false, blockStart:-9, barrier:0, barrierUntil:-9, castT:-9, castX:0, castY:0},
+    e:L.boss ? makeBoss(L) : null,
+    mobs:[], shots:[], pshots:[], quakes:[], bombs:[], bolts:[], booms:[], fx:[], texts:[], loot:[], drops:[], unlockedNext:false
+  };
+  return s;
+}
+let S = makeState('title');
+let paused = false;
+function newRun(){
+  const k = attKey(); att[k] = (att[k] || 0) + 1; store.set('prolar.att3', att);
+  S = makeState('play'); paused = false; keys.clear(); pressed.clear();
+  if (S.L.waves) spawnWave(0);
+  else S.banner = {txt:BOSSES[S.L.boss].ad, t:0};
+  syncUI();
+}
+function toMenu(){ S = makeState('title'); paused = false; syncUI(); renderBag(); }
+
+const pRect = () => { const p = S.p; return {l:p.x - p.w/2, r:p.x + p.w/2, t:p.y - p.h, b:p.y}; };
+const tRect = m => ({l:m.x - m.w/2, r:m.x + m.w/2, t:m.y - m.h, b:m.y});
+const lungeBox = e => e.face > 0 ? {l:e.x + e.w/2, r:e.x + e.w/2 + 72, t:e.y - 44, b:e.y - 28} : {l:e.x - e.w/2 - 72, r:e.x - e.w/2, t:e.y - 44, b:e.y - 28};
+const quakeRect = w => ({l:w.x - 14, r:w.x + 14, t:FLOOR - 24, b:FLOOR});
+const bashBox = m => m.face > 0 ? {l:m.x + 8, r:m.x + 62, t:m.y - 46, b:m.y} : {l:m.x - 62, r:m.x - 8, t:m.y - 46, b:m.y};
+const dashBox = m => m.face > 0 ? {l:m.x, r:m.x + 40, t:m.y - 38, b:m.y - 4} : {l:m.x - 40, r:m.x, t:m.y - 38, b:m.y - 4};
+const MELEE = {fist:{r:44, a:.05, b:.15}, dagger:{r:52, a:.04, b:.13}, shield:{r:66, a:.05, b:.16}, hammer:{r:92, a:.16, b:.28}};
+function meleeBox(p){
+  const m = MELEE[p.st.wd.kind], tall = p.st.wd.kind === 'hammer';
+  const t = p.y - (tall ? 58 : 44), b = p.y - (tall ? 0 : 6);
+  return p.face > 0 ? {l:p.x + (tall ? -10 : 4), r:p.x + m.r, t, b} : {l:p.x - m.r, r:p.x - (tall ? -10 : 4), t, b};
+}
+
+/* ---------- efektler ---------- */
+function addShake(v){ if (!RM.matches) S.shake = Math.max(S.shake, v); }
+function burst(x, y, col, n, sp){
+  for (let i = 0; i < n; i++){
+    const a = Math.random() * Math.PI * 2, v = rand(.3, 1) * sp;
+    S.fx.push({x, y, vx:Math.cos(a) * v, vy:Math.sin(a) * v - sp * .3, life:rand(.25, .55), age:0, col, sz:rand(2, 4), g:700});
+  }
+}
+function dust(x, y, n, dir){
+  for (let i = 0; i < n; i++) S.fx.push({x:x + rand(-10, 10), y:y - 2, vx:rand(-60, 60) + dir * 90, vy:rand(-120, -30), life:rand(.25, .45), age:0, col:C.dust, sz:rand(2, 3.5), g:500});
+}
+function text(x, y, txt, col, size){ S.texts.push({x, y, txt, col, size, age:0, life:.85}); }
+function dodgedFx(perfect){
+  const p = S.p; S.dodged++;
+  text(p.x, p.y - 64, perfect ? 'MÜKEMMEL' : 'KAÇTIN', perfect ? C.ember : C.frost, perfect ? 20 : 16);
+  burst(p.x, p.y - 24, perfect ? C.ember : C.frost, perfect ? 14 : 8, 200);
+}
+
+/* ---------- oyuncuya hasar ---------- */
+function stunTarget(who, dur){
+  if (!who || who.hp <= 0) return;
+  if (who.isBoss){
+    if (['lunge','charge','slam','rowStrike'].includes(who.state) || who.state.endsWith('Wind')){
+      who.vx = 0; who.state = 'recover'; who.st = who.ck; who.dur = .9; who.held = true;
+      text(who.x, who.y - who.h - 14, 'SENDELEDİ', C.ember, 16);
+    }
+  } else { who.stunUntil = S.t + dur; }
+}
+function hurtPlayer(o){
+  const p = S.p, t = S.t;
+  if (t < p.ifrUntil) return 'dodged';
+  if (t < p.hurtUntil) return 'invuln';
+  const fromX = o.fromX == null ? p.x + p.face : o.fromX;
+  if (p.blocking && o.blockable !== false && Math.sign(fromX - p.x) === p.face){
+    if (t - p.blockStart < p.st.parryWin){
+      text(p.x, p.y - 64, 'PARRY', C.ember, 20); burst(p.x + p.face * 18, p.y - 28, C.ember, 14, 240);
+      S.hitstop = .06; addShake(4); if (o.who) stunTarget(o.who, 1.2);
+      return 'parry';
+    }
+    text(p.x, p.y - 62, 'BLOK', C.frost, 15); burst(p.x + p.face * 18, p.y - 28, C.frost, 6, 160);
+    p.vx = -p.face * 160; S.hitstop = Math.max(S.hitstop, .03);
+    return 'blocked';
+  }
+  if (p.barrier > 0 && t < p.barrierUntil){
+    p.barrier = 0; p.hurtUntil = t + .35;
+    text(p.x, p.y - 62, 'BARİYER', C.frost, 15); burst(p.x, p.y - 24, C.frost, 16, 220);
+    return 'barrier';
+  }
+  let dmg = o.dmg * (1 - (o.el ? (p.st.res[o.el] || 0) : 0)) * (1 - p.st.reduce);
+  dmg = Math.max(1, Math.round(dmg));
+  p.hp -= dmg; p.hurtUntil = t + .8; p.stunUntil = t + .18; p.blocking = false;
+  p.vx = (o.dir || 1) * 300; p.vy = -360; p.grounded = false;
+  S.hitstop = .09; addShake(9); S.flashT = t;
+  burst(p.x, p.y - 24, o.el ? elCol(o.el) : C.blood, 14, 260);
+  text(p.x, p.y - 62, '-' + dmg, C.blood, 18);
+  if (p.hp <= 0){ p.hp = 0; endRun(false); }
+  return 'hit';
+}
+
+/* ---------- düşmana hasar ---------- */
+function damageEnemy(t, base, el, o){
+  o = o || {};
+  if (t.dead || t.hp <= 0) return false;
+  if (!t.isBoss && t.state === 'spawn') return false;
+  const p = S.p;
+  const fromX = o.fromX == null ? p.x : o.fromX;
+  if (!t.isBoss && t.a === 'tank' && t.state !== 'open' && o.blockable !== false && !o.tick && Math.sign(fromX - t.x) === t.face){
+    text(t.x + t.face * 20, t.y - t.h - 6, 'BLOK', C.frost, 14);
+    burst(t.x + t.face * 20, t.y - 30, C.frost, 6, 160);
+    if (o.melee){ S.hitstop = Math.max(S.hitstop, .03); p.vx = t.face * 240; }
+    return false;
+  }
+  let dmg = base, tag = '';
+  if (el && t.weak && el === t.weak){ dmg *= 1.5; tag = 'weak'; }
+  else if (el && t.el && el === t.el){ dmg *= .5; tag = 'res'; }
+  if (o.backstab && Math.sign(p.x - t.x) !== t.face){ dmg *= p.st.backstab; tag = 'back'; }
+  const armored = !t.isBoss && t.aff.includes('zirhli') && t.hp > t.max * .6;
+  if (armored) dmg *= .5;
+  dmg = Math.max(1, Math.round(dmg));
+  t.hp -= dmg; t.lastHitT = S.t;
+  if (armored && t.hp <= t.max * .6 && t.hp > 0) text(t.x, t.y - t.h - 30, 'ZIRH KIRILDI', AFFIX.zirhli.col, 13);
+  if (!o.tick){
+    t.flash = .07;
+    S.hitstop = Math.max(S.hitstop, o.melee ? .035 : .012); addShake(o.melee ? 2 : 1);
+    burst(t.x, t.y - t.h / 2, el ? elCol(el) : C.bone, 6, 180);
+  }
+  const col = tag === 'weak' || tag === 'back' ? C.ember : tag === 'res' ? C.dust : (o.tick ? elCol('zehir') : C.bone);
+  text(t.x + rand(-10, 10), t.y - t.h - 12, String(dmg) + (tag === 'weak' ? '!' : ''), col, o.tick ? 12 : tag ? 17 : 15);
+  if (tag === 'back') text(t.x, t.y - t.h - 30, 'ARKADAN', C.ember, 13);
+  if (o.stun){ if (t.isBoss) text(t.x, t.y - t.h - 30, 'BAĞIŞIK', C.dust, 13); else t.stunUntil = S.t + o.stun; }
+  if (o.slow) t.slowUntil = S.t + o.slow;
+  if (o.poison){ t.poisonUntil = S.t + 3; t.poisonDps = o.poison; }
+  if (!t.isBoss && !o.tick && t.a !== 'tank'){
+    t.kb = Math.sign(t.x - fromX || 1) * (o.melee ? 220 : 120);
+    if (t.state !== 'dash' && t.state !== 'spawn') mset(t, 'hurt', .22);
+  }
+  if (!t.isBoss && t.hp > 0 && t.hp < t.max * .35 && !t.lowFired){
+    t.lowFired = true;
+    if (t.aff.includes('gorunmez')){ t.invisUntil = S.t + 2; text(t.x, t.y - t.h - 30, 'GÖRÜNMEZ', AFFIX.gorunmez.col, 13); }
+    if (t.aff.includes('ofkeli')){ t.enraged = true; text(t.x, t.y - t.h - 30, 'ÖFKELENDİ', AFFIX.ofkeli.col, 13); }
+  }
+  if (t.hp <= 0) kill(t);
+  else if (t.isBoss) bossPhaseCheck();
+  return true;
+}
+function kill(t){
+  t.hp = 0;
+  if (t.isBoss){
+    const g = Math.round(50 * TF(S.L.c) * (S.L.kind === 'boss' ? 2 : 1)); addGold(g);
+    text(t.x, t.y - t.h - 30, `+${g} altın`, C.ember, 18);
+    burst(t.x, t.y - 30, C.ember, 40, 380);
+    for (const m of S.mobs){ m.dead = true; burst(m.x, m.y - m.h / 2, C.dust, 10, 200); }
+    lootBoss(t);
+    endRun(true);
+    return;
+  }
+  t.dead = true; S.kills++; prof.kills = (prof.kills || 0) + 1;
+  const g = Math.round(ARCH[t.a].gold * TF(S.L.c) * (t.aff.length ? 2 : 1)); addGold(g);
+  text(t.x, t.y - t.h - 26, `+${g} altın`, C.ember, 15);
+  burst(t.x, t.y - t.h / 2, t.pal.mob, 18, 260);
+  if (t.aff.includes('patlayan')) S.bombs.push({x:t.x, y:t.y, at:S.t + .8, r:90, dmg:t.dmg * 1.5, el:t.el});
+  rollMobLoot(t);
+}
+/* ---------- ganimet ---------- */
+function addGold(g){ S.gold += g; prof.gold += g; markDirty(); }
+function grant(id, x, y, src){
+  const it = ITEM_BY_ID[id]; if (!it) return;
+  prof.inv[id] = (prof.inv[id] || 0) + 1;
+  S.loot.push(id); S.drops.push({id, x, y, t:S.t, src:src || ''});
+  burst(x, y, it.rare ? '#f2c14e' : C.ember, it.rare ? 30 : 14, 220);
+  markDirty();
+}
+function pickLoot(c, onlyWeapon){
+  let pool = ITEMS.filter(i => i.tier === c && !i.rare && (!onlyWeapon || i.slot === 'silah'));
+  const wc = S.p.st.wd.cls;
+  if (wc && Math.random() < DROP.smart){ const p2 = pool.filter(i => i.cls === wc || (!i.cls && !onlyWeapon)); if (p2.length) pool = p2; }
+  return pool[Math.floor(Math.random() * pool.length)].id;
+}
+function pickClassWeapon(c){
+  const wc = S.p.st.wd.cls;
+  let pool = ITEMS.filter(i => i.tier === c && !i.rare && i.slot === 'silah' && (!wc || i.cls === wc));
+  if (!pool.length) pool = ITEMS.filter(i => i.tier === c && !i.rare && i.slot === 'silah');
+  return pool[Math.floor(Math.random() * pool.length)].id;
+}
+function rollMobLoot(m){
+  const c = S.L.c, elite = m.aff.length > 0, r = RARE_BY_C[c];
+  if (r && (r.a == null || r.a === m.a) && Math.random() < (elite ? DROP.rareElite : DROP.rare)){ grant(r.id, m.x, m.y - m.h, 'Nadir'); return; }
+  if (Math.random() < DROP.mob[m.a] * (elite ? DROP.eliteMul : 1)) grant(pickLoot(c), m.x, m.y - m.h);
+}
+function lootBoss(e){
+  const c = S.L.c, id = S.L.boss;
+  if (!prof.bossFirst[id]){ prof.bossFirst[id] = true; grant(pickClassWeapon(c), e.x, e.y - e.h, 'İlk zafer'); }
+  else grant(pickLoot(c), e.x, e.y - e.h);
+  if (Math.random() < (S.L.kind === 'boss' ? DROP.bossExtra : DROP.miniExtra)) grant(pickLoot(c), e.x + 30, e.y - e.h - 20);
+}
+function endRun(won){
+  if (S.mode !== 'play') return;
+  S.mode = won ? 'won' : 'dead';
+  const key = attKey();
+  if (won){
+    const first = !prof.cleared[key];
+    if (S.L.kind === 'level'){
+      if (key === '1-1' && first) grant(pickClassWeapon(1), S.p.x, S.p.y - 60, 'İlk silahın');
+      else if (Math.random() < (first ? DROP.chestFirst : DROP.chestRepeat)) grant(pickLoot(S.L.c), S.p.x, S.p.y - 60, 'Bölüm sandığı');
+    }
+    addGold(Math.round(10 * TF(S.L.c) * SF(S.L.s)));
+    prof.cleared[key] = (prof.cleared[key] || 0) + 1;
+    if (lobby.role !== 'guest' && sel.c === prof.prog.c && sel.s === prof.prog.s){
+      if (sel.s < 50){ prof.prog = {c:sel.c, s:sel.s + 1}; S.unlockedNext = true; }
+      else if (sel.c < 10){ prof.prog = {c:sel.c + 1, s:1}; S.unlockedNext = true; }
+    }
+  }
+  markDirty(); flushSave();
+  syncUI(); renderBag(); renderMarket();
+}
+function bossPhaseCheck(){
+  const e = S.e;
+  if (e.phase === 1 && e.hp <= e.max / 2){
+    e.phase = 2; addShake(10); burst(e.x, e.y - 30, C.ember, 22, 320);
+    if (e.def.weak2){ e.weak = e.def.weak2; S.banner = {txt:`2. AŞAMA · zayıflık ${elAd(e.weak)}`, t:S.t}; }
+    else S.banner = {txt:'2. AŞAMA', t:S.t};
+  }
+}
+
+/* ---------- oyuncu ---------- */
+function onDodgePress(){
+  const en = S.e && S.e.cur;
+  if (en && en.result == null) en.press = S.t - en.jump;
+  const lh = S.lastHit;
+  if (lh && lh.result === 'hit-none'){
+    const late = S.t - (lh.jump + lh.res);
+    if (late < .45){ lh.late = late; lh.result = 'hit-late'; renderLog(); }
+  }
+  S.lastHit = null;
+}
+function enemies(){ const a = S.mobs.filter(m => !m.dead); if (S.e && S.e.hp > 0) a.push(S.e); return a; }
+function firePlayerShot(kind, dmg, el, extra){
+  const p = S.p, sx = p.x + p.face * 10, sy = p.y - 30;
+  const ang = Math.atan2(mouse.y - sy, mouse.x - sx);
+  const sh = SHOT[kind], speed = kind === 'orb' ? 760 : kind === 'shard' ? 900 : 1150;
+  S.pshots.push(Object.assign({kind, x:sx, y:sy, vx:Math.cos(ang) * speed, vy:Math.sin(ang) * speed, ang,
+    len:sh.len || 0, tip:(sh.len || 0) * (sh.tipF || 0), gap:sh.gap || 0, r:sh.r || 0, dmg, el, hitSet:new Set(), dead:false, life:1.6}, extra));
+}
+function doAttack(){
+  const p = S.p, st = p.st, w = st.wd, t = S.t;
+  p.face = mouse.x >= p.x ? 1 : -1;
+  p.atkT = t; p.atkId++;
+  if (w.kind === 'bow'){
+    firePlayerShot('arrow', st.dmg, st.wEl, {pierce:w.fx === 'pierce', aoe:w.fx === 'aoe'});
+  } else if (w.kind === 'staff'){
+    if (w.fx === 'stun'){ p.castT = t; p.castX = clamp(mouse.x, WALL, W - WALL); p.castY = clamp(mouse.y, 40, FLOOR); }
+    else if (w.fx === 'slow') firePlayerShot('shard', st.dmg, st.wEl, {slow:2});
+    else if (w.fx === 'heal'){
+      const amt = Math.round(st.maxHp * .25), before = p.hp; p.hp = Math.min(st.maxHp, p.hp + amt);
+      text(p.x, p.y - 64, '+' + (p.hp - before), C.frost, 18); burst(p.x, p.y - 30, C.frost, 16, 160);
+    } else if (w.fx === 'barrier'){
+      p.barrier = 1; p.barrierUntil = t + 6; text(p.x, p.y - 64, 'BARİYER', C.frost, 15); burst(p.x, p.y - 30, C.frost, 12, 160);
+    }
+  }
+}
+function updPlayer(dt){
+  const p = S.p, t = S.t, st = p.st, w = st.wd;
+  const stunned = t < p.stunUntil;
+  const ix = stunned ? 0 : (keys.has('right') ? 1 : 0) - (keys.has('left') ? 1 : 0);
+  if (pressed.has('jump')) p.jumpBuf = t;
+  if (pressed.has('down') && p.grounded && p.y < FLOOR){ p.dropUntil = t + .22; p.grounded = false; p.y += 1; }
+  const dodging = t < p.dodgeUntil;
+  /* savunma: dodge ya da ışınlanma */
+  if (pressed.has('dodge') && !stunned){
+    if (t - p.dodgeT >= st.dodgeCd){
+      p.dodgeT = t; p.ifrUntil = t + st.ifr / 1000; p.blocking = false;
+      if (st.def.blink){
+        let dx = mouse.x - p.x, dy = mouse.y - (p.y - p.h / 2);
+        const d = Math.hypot(dx, dy), mx = st.def.range;
+        if (d > mx){ dx *= mx / d; dy *= mx / d; }
+        burst(p.x, p.y - 24, C.frost, 14, 200);
+        p.x = clamp(p.x + dx, WALL + p.w / 2, W - WALL - p.w / 2);
+        p.y = clamp(p.y + dy, 80, FLOOR); p.vy = 0; p.vx = 0; p.grounded = p.y >= FLOOR;
+        p.face = dx >= 0 ? 1 : -1;
+        burst(p.x, p.y - 24, C.frost, 14, 200);
+      } else {
+        p.dodgeUntil = t + st.dodgeDur; p.dodgeDir = ix || p.face; p.face = p.dodgeDir; p.vy = 0;
+        dust(p.x, p.y, 6, -p.dodgeDir);
+      }
+      onDodgePress();
+    } else { const en = S.e && S.e.cur; if (en && en.result == null) en.cdPress = true; }
+  }
+  /* kalkan */
+  const canBlock = w.kind === 'shield' && !dodging && !stunned;
+  if (canBlock && keys.has('alt')){
+    if (!p.blocking){ p.blocking = true; p.blockStart = t; }
+    p.face = mouse.x >= p.x ? 1 : -1;
+  } else p.blocking = false;
+  /* saldırı: okçu ve büyücü her tıkta bir kez atar (otomatik atış yok, nişan elle).
+     Yakın dövüşte basılı tutunca vuruş tekrarlanır. Bekleme bitmeden 0,15 sn içinde tıklarsan tıklama saklanır. */
+  if (pressed.has('attack')) p.atkBuf = t;
+  const ready = t - p.atkT >= st.atkCd;
+  const manual = w.kind === 'bow' || w.kind === 'staff';
+  const want = (t - (p.atkBuf ?? -9) < .15) || (!manual && keys.has('attack'));
+  if (want && ready && !dodging && !stunned && !p.blocking){ p.atkBuf = -9; doAttack(); }
+  /* büyücü sağ tık: zayıf büyü küresi, her tıkta bir kez */
+  if (w.kind === 'staff' && pressed.has('alt') && t - p.altT >= .5 * st.cdMul && !stunned){
+    p.altT = t; p.face = mouse.x >= p.x ? 1 : -1;
+    firePlayerShot('orb', 4 * TF(st.wTier) * st.dmgMul, st.wEl, {});
+  }
+  /* şimşek gecikmesi */
+  if (p.castT > 0 && t - p.castT >= .15){
+    const cx = p.castX, cy = p.castY; p.castT = -9;
+    S.bolts.push({x:cx, y:cy, t});
+    addShake(3);
+    for (const e of enemies()) if (circRect(cx, cy, 55, tRect(e))) damageEnemy(e, st.dmg, st.wEl, {blockable:false, stun:1.2});
+  }
+  /* hareket */
+  const spd = RUN * st.speedMul * (p.blocking ? .4 : 1);
+  if (dodging){ p.vx = p.dodgeDir * DODGE_SPEED; p.vy = 0; }
+  else {
+    const mx = ACC * dt * (p.grounded ? 1 : .75);
+    p.vx += clamp(ix * spd - p.vx, -mx, mx);
+    if (ix && t - p.atkT > .17 && !p.blocking) p.face = ix;
+    p.vy += G * dt;
+    if (p.vy < 0 && !keys.has('jump')) p.vy += G * 1.1 * dt;
+    if (p.vy > 1400) p.vy = 1400;
+  }
+  if (p.grounded) p.coyote = t;
+  if (!dodging && !stunned && t - p.jumpBuf < .12 && t - p.coyote < .09){
+    p.vy = -JUMP; p.grounded = false; p.jumpBuf = -9; p.coyote = -9; dust(p.x, p.y, 5, 0);
+  }
+  const prevY = p.y;
+  p.x += p.vx * dt; p.y += p.vy * dt;
+  p.x = clamp(p.x, WALL + p.w/2, W - WALL - p.w/2);
+  if (p.y < 60){ p.y = 60; p.vy = Math.max(0, p.vy); }
+  const wasG = p.grounded; p.grounded = false;
+  if (p.y >= FLOOR){ p.y = FLOOR; p.vy = 0; p.grounded = true; }
+  else if (p.vy >= 0 && t >= p.dropUntil){
+    for (const pl of S.plats){
+      if (prevY <= pl.y + .01 && p.y >= pl.y && p.x + p.w/2 > pl.x + 2 && p.x - p.w/2 < pl.x + pl.w - 2){
+        p.y = pl.y; p.vy = 0; p.grounded = true; break;
+      }
+    }
+  }
+  if (p.grounded && !wasG) dust(p.x, p.y, 4, 0);
+  /* yakın dövüş vuruşu */
+  const m = MELEE[w.kind];
+  if (m){
+    const ae = t - p.atkT;
+    if (ae >= m.a && ae <= m.b){
+      const box = meleeBox(p);
+      for (const e of enemies()){
+        if (e.hitBy === p.atkId || !ov(box, tRect(e))) continue;
+        e.hitBy = p.atkId;
+        const hit = damageEnemy(e, st.dmg, st.wEl, {melee:true, blockable:w.kind !== 'hammer', backstab:w.kind === 'dagger',
+          poison:w.fx === 'poison' ? st.dmg * .6 : 0});
+        if (hit && w.fx === 'poison'){
+          for (const o of enemies()) if (o !== e && Math.abs(o.x - e.x) < 70 && Math.abs(o.y - e.y) < 60){ o.poisonUntil = S.t + 3; o.poisonDps = st.dmg * .6; }
+        }
+      }
+    }
+  }
+}
+
+/* ---------- boss yapay zekâsı ---------- */
+function setState(s, dur){ const e = S.e; e.state = s; e.st = e.ck; e.dur = dur; }
+const idleTime = () => S.e.phase === 2 ? rand(.4, .65) : rand(.6, .95);
+const bossProjSpeed = kind => set.speed * (SHOT[kind] ? SHOT[kind].speed : 1);
+function aimAt(hx, hy, speed, lead){
+  const p = S.p, py = p.y - p.h / 2;
+  let tx = p.x;
+  for (let i = 0; i < 2; i++){
+    const tt = Math.hypot(tx - hx, py - hy) / speed;
+    tx = clamp(p.x + p.vx * tt * lead, WALL + 10, W - WALL - 10);
+  }
+  return [tx, py];
+}
+const leapTarget = () => { const e = S.e, p = S.p; return clamp(p.x - Math.sign(p.x - e.x || 1) * 50, 60, W - 60); };
+const handPos = e => [e.x - e.face * 6, e.y - e.h + 4];
+function decide(){
+  const e = S.e, p = S.p, d = Math.abs(p.x - e.x), high = p.y < FLOOR - 60, P2 = e.phase === 2, A = e.def.atk;
+  const has = a => A.includes(a);
+  const opts = [];
+  if (has('leap') && e.farT > 1.2) opts.push('leap', 'leap', 'leap');
+  if (has('row') && e.last !== 'row') opts.push(...(high ? ['row', 'row'] : ['row']));
+  if (has('lunge') && d < 230 && !high) opts.push('lunge', 'lunge');
+  if (has('slam') && d < 190 && rowOf(p.y) === 1) opts.push('slam', 'slam');
+  if (has('throw') && d <= 680) opts.push('throw', 'throw');
+  if (has('volley') && d >= 140) opts.push('volley');
+  if (has('charge') && !high && d > 200) opts.push('charge');
+  if (has('summon') && S.mobs.length < 3 && e.last !== 'summon') opts.push('summon');
+  if (has('leap') && d > 420) opts.push('leap');
+  if (!opts.length) opts.push(...A.filter(a => a !== 'summon' || S.mobs.length < 3));
+  let c = opts[Math.floor(Math.random() * opts.length)];
+  if (c === e.last && e.rep >= 1){ const alt = opts.filter(o => o !== c); if (alt.length) c = alt[Math.floor(Math.random() * alt.length)]; }
+  e.rep = c === e.last ? e.rep + 1 : 0; e.last = c;
+  switch (c){
+    case 'row': {
+      const pr = rowOf(p.y);
+      let o = [[1, 3], [2]]; if (P2) o.push([1, 2], [2, 3]);
+      o = o.filter(x => x.includes(pr));
+      e.rows = o[Math.floor(Math.random() * o.length)]; e.rowHit = false; e.rowDodged = false;
+      setState('rowWind', P2 ? .6 : .75); break;
+    }
+    case 'throw': setState('throwPrep', P2 ? .12 : .16); break;
+    case 'lunge': setState('lungeWind', P2 ? .4 : .5); break;
+    case 'leap': e.farT = 0; e.leapX = leapTarget(); setState('leapCrouch', P2 ? .36 : .42); break;
+    case 'volley': e.volleyN = P2 ? 5 : 3; setState('volleyWind', P2 ? .45 : .55); break;
+    case 'charge': e.chargeDir = Math.sign(p.x - e.x) || 1; e.face = e.chargeDir; setState('chargeWind', P2 ? .5 : .65); break;
+    case 'slam': setState('slamWind', P2 ? .5 : .6); break;
+    case 'summon': setState('summonWind', .7); break;
+  }
+}
+function bossShot(kind, x, y, ang, speed, dmg, en){
+  const sh = SHOT[kind];
+  S.shots.push({kind, len:sh.len || 0, tip:(sh.len || 0) * (sh.tipF || 0), gap:sh.gap || 0, r:sh.r || 0,
+    x, y, vx:Math.cos(ang) * speed, vy:Math.sin(ang) * speed, ang, stuck:false, life:0, res:null, dead:false,
+    en:en || null, dmg, el:S.e.el, who:null});
+}
+function updBoss(dt){
+  const e = S.e, p = S.p, t = S.t;
+  const fct = t < e.slowUntil ? .7 : 1;
+  const dtE = dt * fct;
+  e.ck += dtE;
+  const el = e.ck - e.st;
+  const dx = p.x - e.x, d = Math.abs(dx);
+  const P2 = e.phase === 2;
+  if (['idle', 'recover', 'leapCrouch', 'throwPrep', 'volleyWind', 'slamWind', 'summonWind'].includes(e.state) || (e.state === 'lungeWind' && el < .12)) e.face = dx >= 0 ? 1 : -1;
+  e.farT = d > 560 ? e.farT + dtE : Math.max(0, e.farT - dtE * 2);
+  let grav = true;
+  const D = k => BDMG[k] * e.dmgF;
+  switch (e.state){
+    case 'idle': {
+      const pref = 360; let mv = 0;
+      if (d > pref + 70) mv = e.face; else if (d < pref - 140) mv = -e.face;
+      e.vx = mv * (P2 ? 150 : 115);
+      if (el >= e.dur) decide();
+      break;
+    }
+    case 'throwPrep':
+      e.vx = 0;
+      if (el >= e.dur){
+        e.vy = -760; e.vx = d < 220 ? -e.face * 160 : -e.face * 30; e.grounded = false; e.hangDone = false;
+        e.cur = logNew(); dust(e.x, e.y, 8, 0);
+        setState('jump', 0);
+      }
+      break;
+    case 'jump':
+      if (el >= set.tell / 1000){
+        if (P2 && !e.hangDone && Math.random() < .4){
+          e.hangDone = true; if (e.cur) e.cur.hang = true; renderLog();
+          e.vy = 0; e.vx = 0; setState('hang', rand(.16, .32));
+        } else { bossThrow(); setState('fall', 0); }
+      }
+      break;
+    case 'hang':
+      grav = false; e.vy = 0;
+      if (el >= e.dur){ bossThrow(); setState('fall', 0); }
+      break;
+    case 'fall':
+      if (e.grounded){ e.vx = 0; dust(e.x, e.y, 6, 0); setState('recover', P2 ? .35 : .5); }
+      break;
+    case 'recover':
+      e.vx = 0;
+      if (el >= e.dur){ e.held = true; setState('idle', idleTime()); }
+      break;
+    case 'lungeWind':
+      e.vx = 0;
+      if (el >= e.dur){ e.hitDone = false; setState('lunge', .28); }
+      break;
+    case 'lunge':
+      e.vx = e.face * 560;
+      if (!e.hitDone && ov(lungeBox(e), pRect())){
+        const r = hurtPlayer({dmg:D('lunge'), el:e.el, dir:e.face, fromX:e.x, who:e}); e.hitDone = true;
+        if (r === 'dodged') dodgedFx(t - p.dodgeT < .1);
+      }
+      if (el >= e.dur && e.state === 'lunge'){ e.vx = 0; setState('recover', .65); }
+      break;
+    case 'rowWind':
+      e.vx = 0;
+      if (el >= e.dur){
+        addShake(5);
+        for (const r of e.rows) for (let i = 0; i < 6; i++) dust(rand(WALL + 20, W - WALL - 20), ROW_Y[r], 2, 0);
+        setState('rowStrike', .5);
+      }
+      break;
+    case 'rowStrike':
+      e.vx = 0;
+      if (!e.rowHit && el < .25 && e.rows.includes(rowOf(p.y))){
+        const r = hurtPlayer({dmg:D('row'), el:e.el, dir:Math.sign(p.x - e.x) || 1, blockable:false});
+        if (r === 'dodged') e.rowDodged = true; else e.rowHit = true;
+      }
+      if (el >= e.dur){
+        if (e.rowDodged && !e.rowHit) dodgedFx(false);
+        e.held = true; setState('recover', .6);
+      }
+      break;
+    case 'leapCrouch':
+      e.vx = 0;
+      if (el < e.dur - .12) e.leapX = leapTarget();
+      if (el >= e.dur){
+        e.vx = (e.leapX - e.x) / (2 * 900 / G); e.vy = -900; e.grounded = false;
+        setState('leapAir', 0);
+      }
+      break;
+    case 'leapAir':
+      if (e.grounded && el > .1){
+        e.vx = 0; addShake(7); dust(e.x, e.y, 14, 0);
+        const q = D('quake');
+        S.quakes.push({x:e.x - 22, dir:-1, done:false, dmg:q, el:e.el}, {x:e.x + 22, dir:1, done:false, dmg:q, el:e.el});
+        setState('recover', .55);
+      }
+      break;
+    case 'volleyWind':
+      e.vx = 0;
+      if (el >= e.dur){
+        const [hx, hy] = handPos(e), sp = bossProjSpeed(e.def.proj === 'spear' ? 'arrow' : e.def.proj) * .9;
+        const base = Math.atan2((p.y - p.h / 2) - hy, p.x - hx);
+        const offs = e.volleyN === 5 ? [-.3, -.15, 0, .15, .3] : [-.2, 0, .2];
+        for (const o of offs) bossShot(e.def.proj === 'spear' ? 'arrow' : e.def.proj, hx, hy, base + o, sp, D('volley'));
+        setState('recover', .55);
+      }
+      break;
+    case 'chargeWind':
+      e.vx = 0; e.face = e.chargeDir;
+      if (el >= e.dur){ e.hitDone = false; setState('charge', 3); }
+      break;
+    case 'charge': {
+      e.vx = e.chargeDir * 720;
+      if (!e.hitDone && ov(tRect(e), pRect())){
+        const r = hurtPlayer({dmg:D('charge'), el:e.el, dir:e.chargeDir, fromX:e.x - e.chargeDir * 10, who:e}); e.hitDone = true;
+        if (r === 'dodged') dodgedFx(t - p.dodgeT < .1);
+      }
+      const lim = e.chargeDir > 0 ? W - WALL - e.w / 2 - 1 : WALL + e.w / 2 + 1;
+      if (e.state === 'charge' && ((e.chargeDir > 0 && e.x >= lim) || (e.chargeDir < 0 && e.x <= lim) || el > 2.5)){
+        e.vx = 0; addShake(8); dust(e.x + e.chargeDir * e.w / 2, e.y - 20, 12, -e.chargeDir);
+        text(e.x, e.y - e.h - 14, 'SERSEM', C.dust, 14);
+        setState('recover', .9);
+      }
+      break;
+    }
+    case 'slamWind':
+      e.vx = 0;
+      if (el >= e.dur){
+        addShake(9); dust(e.x, e.y, 18, 0); burst(e.x, e.y - 6, rgba(C.ember, 1), 0, 0);
+        const rad = 160 + e.w / 2;
+        if (Math.abs(p.x - e.x) < rad && rowOf(p.y) === 1){
+          const r = hurtPlayer({dmg:D('slam'), el:e.el, dir:Math.sign(p.x - e.x) || 1, fromX:e.x, who:e});
+          if (r === 'dodged') dodgedFx(t - p.dodgeT < .1);
+        }
+        S.booms.push({x:e.x, y:FLOOR, r:rad, t, col:e.pal.light, flat:true});
+        setState('recover', .6);
+      }
+      break;
+    case 'summonWind':
+      e.vx = 0;
+      if (el >= e.dur){
+        if (S.mobs.length < 4){
+          spawnMob({a:'runner', x:e.x < 480 ? 900 : 60, origin:S.L.c === 10 ? 1 + Math.floor(Math.random() * 9) : S.L.c, aff:[]});
+          const pi = Math.floor(Math.random() * S.plats.length);
+          spawnMob({a:'ranged', x:0, home:pi, origin:S.L.c === 10 ? 1 + Math.floor(Math.random() * 9) : S.L.c, aff:[]});
+        }
+        setState('recover', .5);
+      }
+      break;
+  }
+  if (grav) e.vy += G * dtE;
+  e.x += e.vx * dtE; e.y += e.vy * dtE;
+  e.x = clamp(e.x, WALL + e.w/2, W - WALL - e.w/2);
+  if (e.y >= FLOOR){ e.y = FLOOR; e.vy = 0; e.grounded = true; } else e.grounded = false;
+  if (e.flash > 0) e.flash -= dt;
+  tickPoison(e, dt);
+}
+function bossThrow(){
+  const e = S.e, [hx, hy] = handPos(e), kind = e.def.proj, sp = bossProjSpeed(kind);
+  const [tx, ty] = aimAt(hx, hy, sp, .85);
+  bossShot(kind, hx, hy, Math.atan2(ty - hy, tx - hx), sp, BDMG.throw * e.dmgF, e.cur);
+  e.held = false;
+}
+
+/* ---------- moblar ---------- */
+function mset(m, s, dur){ m.state = s; m.st = m.ck; m.dur = dur; }
+function spawnMob(d){
+  const L = S.L, A = ARCH[d.a], och = CHAPTERS[(d.origin || L.c) - 1];
+  let home;
+  if (d.home == null) home = {y:FLOOR, l:WALL + 16, r:W - WALL - 16};
+  else { const pl = S.plats[d.home % S.plats.length]; home = {y:pl.y, l:pl.x + 14, r:pl.x + pl.w - 14}; }
+  let x = d.x;
+  if (d.home != null && (!x || x < home.l || x > home.r)) x = home.l + (home.r - home.l) * (.25 + Math.random() * .5);
+  x = clamp(x, home.l, home.r);
+  if (Math.abs(x - S.p.x) < 120 && home.y === FLOOR) x = clamp(S.p.x + (x < S.p.x ? -160 : 160), home.l, home.r);
+  const f = TF(L.c) * SF(L.s);
+  const hp = Math.round(A.hp * f * (d.aff.length ? 1.4 : 1));
+  const m = {a:d.a, x, y:home.y, home, w:A.w, h:A.h, hp, max:hp, face:x > S.p.x ? -1 : 1,
+    state:'spawn', st:0, ck:0, dur:rand(.55, .85), flash:0, kb:0, hitBy:-1, cd:rand(.6, 1.4), turnT:0,
+    aimX:S.p.x, aimY:S.p.y - 23, dead:false, hitDone:false, isBoss:false,
+    dmg:A.dmg * f, el:och.el === 'mix' ? null : och.el, weak:och.weak === 'mix' ? null : och.weak,
+    pal:och.pal, name:och.mobs ? och.mobs[d.a] : d.a, proj:och.proj, aff:d.aff || [],
+    tempo:Math.min(1.3, 1 + .025 * (L.c - 1) + .1 * (L.s / 50)), spd:1 + .02 * (L.c - 1),
+    stunUntil:-9, slowUntil:-9, poisonUntil:-9, poisonDps:0, poisonTick:0, lastHitT:-9, invisUntil:-9, enraged:false, lowFired:false};
+  S.mobs.push(m);
+  dust(x, home.y, 8, 0);
+  return m;
+}
+function spawnWave(i){
+  for (const d of S.L.waves[i].mobs) spawnMob(d);
+  S.wave = i; S.waveT = 0;
+  S.banner = {txt:`Dalga ${i + 1} / ${S.L.waves.length}`, t:S.t, sub:FORMS[S.L.waves[i].form]};
+}
+function mobShoot(m){
+  const bx = m.x + m.face * 12, by = m.y - 30, kind = m.proj, sh = SHOT[kind], sp = MOB_SHOT_SPEED[kind];
+  const ang = Math.atan2(m.aimY - by, m.aimX - bx);
+  S.shots.push({kind, len:sh.len || 0, tip:(sh.len || 0) * (sh.tipF || 0), gap:sh.gap || 0, r:sh.r || 0,
+    x:bx, y:by, vx:Math.cos(ang) * sp, vy:Math.sin(ang) * sp, ang, stuck:false, life:0, res:null, dead:false,
+    en:null, dmg:m.dmg, el:m.el, who:m});
+}
+function mobAttackHit(m, box){
+  if (m.hitDone || !ov(box, pRect())) return;
+  m.hitDone = true;
+  const r = hurtPlayer({dmg:m.dmg, el:m.el, dir:m.face, fromX:m.x, who:m});
+  if (r === 'dodged') dodgedFx(S.t - S.p.dodgeT < .1);
+  else if (r === 'hit' && m.a === 'tank') S.p.vx = m.face * 420;
+}
+function updMob(m, dt){
+  const p = S.p, t = S.t;
+  if (t < m.stunUntil) return 0;
+  const f = m.tempo * (t < m.slowUntil ? .5 : 1) * (m.enraged ? 1.35 : 1);
+  m.ck += dt * f;
+  const el = m.ck - m.st, dx = p.x - m.x, d = Math.abs(dx), side = dx >= 0 ? 1 : -1;
+  const same = rowOf(p.y) === rowOf(m.y);
+  const mv = m.spd * (t < m.slowUntil ? .5 : 1) * (m.enraged ? 1.3 : 1);
+  if (m.state === 'spawn'){ if (el >= m.dur) mset(m, m.a === 'runner' ? 'chase' : m.a === 'ranged' ? 'idle' : 'walk', 0); return 0; }
+  if (m.state === 'hurt'){ if (el >= m.dur) mset(m, m.a === 'runner' ? 'chase' : m.a === 'ranged' ? 'idle' : 'walk', 0); return 0; }
+  if (m.a === 'tank'){
+    switch (m.state){
+      case 'walk':
+        if (side !== m.face){ m.turnT += dt * f; if (m.turnT > .7){ m.face = side; m.turnT = 0; } } else m.turnT = 0;
+        if (same && d < 78 && side === m.face){ mset(m, 'bashWind', .5); return 0; }
+        return side === m.face && d > 56 ? m.face * 70 * mv : 0;
+      case 'bashWind': if (el >= m.dur){ m.hitDone = false; mset(m, 'bash', .16); } return 0;
+      case 'bash': mobAttackHit(m, bashBox(m)); if (el >= m.dur) mset(m, 'open', .75); return m.face * 140;
+      case 'open': if (el >= m.dur){ m.turnT = 0; mset(m, 'walk', 0); } return 0;
+    }
+  } else if (m.a === 'ranged'){
+    switch (m.state){
+      case 'idle':
+        m.face = side; m.cd -= dt * f;
+        if (m.cd <= 0){ mset(m, 'aim', .65); return 0; }
+        return same && d < 200 ? -side * 95 * mv : 0;
+      case 'aim':
+        m.face = side;
+        if (el < m.dur - .18){ m.aimX = clamp(p.x + p.vx * .15, WALL, W - WALL); m.aimY = p.y - p.h / 2; }
+        if (el >= m.dur){ mobShoot(m); m.cd = rand(1.7, 2.6); mset(m, 'idle', 0); }
+        return 0;
+    }
+  } else {
+    switch (m.state){
+      case 'chase':
+        m.face = side; m.cd -= dt * f;
+        if (same && d < 150 && m.cd <= 0){ mset(m, 'wind', .34); return 0; }
+        if (!same) return (d > 40 ? side * 120 : 0) * mv;
+        return (d > 110 ? side : d < 60 ? -side : 0) * 210 * mv;
+      case 'wind': if (el >= m.dur){ m.hitDone = false; mset(m, 'dash', .22); } return 0;
+      case 'dash': mobAttackHit(m, dashBox(m)); if (el >= m.dur){ m.cd = rand(.6, 1.1); mset(m, 'rec', .5); } return m.face * 520;
+      case 'rec': if (el >= m.dur) mset(m, 'chase', 0); return 0;
+    }
+  }
+  return 0;
+}
+function tickPoison(e, dt){
+  if (S.t < e.poisonUntil){
+    e.poisonTick += dt;
+    if (e.poisonTick >= .5){ e.poisonTick = 0; damageEnemy(e, e.poisonDps * .5, null, {tick:true, blockable:false}); }
+  }
+}
+function updMobs(dt){
+  for (const m of S.mobs){
+    if (m.dead) continue;
+    const vx = updMob(m, dt);
+    m.kb *= Math.pow(.002, dt);
+    m.x = clamp(m.x + (vx + m.kb) * dt, m.home.l, m.home.r);
+    if (m.flash > 0) m.flash -= dt;
+    tickPoison(m, dt);
+    if (m.aff.includes('yenilenen') && !m.dead && S.t - m.lastHitT > 2 && m.hp < m.max) m.hp = Math.min(m.max, m.hp + m.max * .04 * dt);
+  }
+  S.mobs = S.mobs.filter(m => !m.dead);
+}
+function updLevel(dt){
+  if (!S.L.waves || S.mobs.length) return;
+  if (S.wave >= S.L.waves.length - 1){ endRun(true); return; }
+  S.waveT += dt;
+  if (S.waveT >= 1.4) spawnWave(S.wave + 1);
+}
+
+/* ---------- mermiler, dalgalar, tuzaklar ---------- */
+function shotTouches(s, r){
+  if (s.kind === 'orb') return circRect(s.x, s.y, s.r, r);
+  const c = Math.cos(s.ang), sn = Math.sin(s.ang), tx = s.x + c * s.tip, ty = s.y + sn * s.tip;
+  for (let k = 0; k < 3; k++) if (inRect(tx - c * k * s.gap, ty - sn * k * s.gap, r)) return true;
+  return false;
+}
+function shotTip(s){ if (s.kind === 'orb') return [s.x, s.y + s.r]; return [s.x + Math.cos(s.ang) * s.tip, s.y + Math.sin(s.ang) * s.tip]; }
+function updShots(dt){
+  const p = S.p;
+  for (const s of S.shots){
+    if (s.stuck){ s.life -= dt; continue; }
+    s.x += s.vx * dt; s.y += s.vy * dt;
+    if (s.res == null && shotTouches(s, pRect())){
+      const r = hurtPlayer({dmg:s.dmg, el:s.el, dir:Math.sign(s.vx) || 1, fromX:p.x - Math.sign(s.vx) * 10});
+      if (r === 'hit'){ s.dead = true; s.res = 'hit'; resolveEntry(s.en, 'hit'); }
+      else if (r === 'dodged'){ const perf = S.t - p.dodgeT < .1; s.res = 'dodged'; dodgedFx(perf); resolveEntry(s.en, perf ? 'perfect' : 'dodged'); }
+      else if (r === 'parry' || r === 'blocked' || r === 'barrier'){ s.dead = true; s.res = r; resolveEntry(s.en, r); }
+      else { s.res = 'invuln'; resolveEntry(s.en, 'invuln'); }
+    }
+    const [tipX, tipY] = shotTip(s);
+    if (tipY >= FLOOR || tipX <= WALL || tipX >= W - WALL){
+      if (s.kind === 'orb'){ s.dead = true; burst(s.x, Math.min(FLOOR - 4, s.y), elCol(s.el), 6, 120); }
+      else {
+        const sn = Math.sin(s.ang), c = Math.cos(s.ang);
+        if (tipY >= FLOOR && sn > .05){ const back = (tipY - FLOOR) / sn; s.x -= c * back; s.y -= sn * back; }
+        s.stuck = true; s.life = 1.2; dust(tipX, Math.min(FLOOR, tipY), 3, 0);
+      }
+      if (s.res == null){ s.res = 'miss'; resolveEntry(s.en, 'miss'); }
+    } else if (tipY < -80) s.dead = true;
+  }
+  S.shots = S.shots.filter(s => !s.dead && !(s.stuck && s.life <= 0));
+}
+function explode(x, y, s){
+  S.booms.push({x, y, r:60, t:S.t, col:elCol(s.el) || C.ember});
+  addShake(3);
+  for (const e of enemies()) if (circRect(x, y, 60, tRect(e))) damageEnemy(e, s.dmg, s.el, {blockable:false, fromX:x});
+}
+function updPShots(dt){
+  for (const s of S.pshots){
+    s.life -= dt; if (s.life <= 0){ s.dead = true; continue; }
+    s.x += s.vx * dt; s.y += s.vy * dt;
+    for (const e of enemies()){
+      if (s.dead) break;
+      if (s.hitSet.has(e) || !shotTouches(s, tRect(e))) continue;
+      const [tx, ty] = shotTip(s);
+      if (s.aoe){ explode(tx, ty, s); s.dead = true; break; }
+      s.hitSet.add(e);
+      damageEnemy(e, s.dmg, s.el, {fromX:s.x - Math.sign(s.vx) * 20, slow:s.slow || 0});
+      if (!s.pierce) s.dead = true;
+    }
+    if (s.dead) continue;
+    const [tx, ty] = shotTip(s);
+    if (ty >= FLOOR || tx <= WALL || tx >= W - WALL || ty < 20){
+      if (s.aoe) explode(tx, Math.min(ty, FLOOR - 4), s);
+      s.dead = true; dust(tx, Math.min(FLOOR, ty), 3, 0);
+    }
+  }
+  S.pshots = S.pshots.filter(s => !s.dead);
+}
+function updQuakes(dt){
+  for (const w of S.quakes){
+    w.x += w.dir * 480 * dt;
+    if (Math.random() < .35) S.fx.push({x:w.x - w.dir * 10, y:FLOOR - 4, vx:-w.dir * rand(20, 60), vy:rand(-90, -30), life:.3, age:0, col:C.dust, sz:2.5, g:400});
+    if (!w.done && ov(quakeRect(w), pRect())){
+      const r = hurtPlayer({dmg:w.dmg, el:w.el, dir:w.dir, fromX:S.p.x - w.dir * 10});
+      w.done = true;
+      if (r === 'dodged') dodgedFx(S.t - S.p.dodgeT < .1);
+    }
+  }
+  S.quakes = S.quakes.filter(w => w.x > WALL - 10 && w.x < W - WALL + 10);
+}
+function updBombs(){
+  for (const b of S.bombs){
+    if (S.t >= b.at && !b.done){
+      b.done = true; addShake(6);
+      S.booms.push({x:b.x, y:b.y - 20, r:b.r, t:S.t, col:AFFIX.patlayan.col});
+      const p = S.p;
+      if (Math.hypot(p.x - b.x, (p.y - 23) - (b.y - 20)) < b.r){
+        const r = hurtPlayer({dmg:b.dmg, el:b.el, dir:Math.sign(p.x - b.x) || 1, blockable:false});
+        if (r === 'dodged') dodgedFx(false);
+      }
+    }
+  }
+  S.bombs = S.bombs.filter(b => !b.done);
+}
+function trapPhase(tr, t){
+  const k = (t + tr.off) % tr.period, warnAt = tr.period - 1.15, actAt = tr.period - .6;
+  if (k >= actAt) return {st:'up', k:(k - actAt) / .6};
+  if (k >= warnAt) return {st:'warn', k:(k - warnAt) / .55};
+  return {st:'down', k:0};
+}
+function updTraps(){
+  const p = S.p, dmg = 14 * TF(S.L.c) * SF(S.L.s);
+  S.traps.forEach((tr, i) => {
+    const ph = trapPhase(tr, S.t);
+    if (ph.st !== 'up'){ S.trapHit[i] = false; return; }
+    if (S.trapHit[i] || ph.k < .08) return;
+    if (p.x + p.w/2 > tr.x && p.x - p.w/2 < tr.x + tr.w && p.y <= tr.y + 1 && p.y >= tr.y - 18){
+      const r = hurtPlayer({dmg, el:null, dir:p.x < tr.x + tr.w / 2 ? -1 : 1, blockable:false});
+      if (r === 'hit'){ S.trapHit[i] = true; p.vy = -520; }
+    }
+  });
+}
+function updFx(dt){
+  for (const f of S.fx){ f.age += dt; f.x += f.vx * dt; f.y += f.vy * dt; f.vy += f.g * dt; }
+  S.fx = S.fx.filter(f => f.age < f.life);
+  for (const tx of S.texts){ tx.age += dt; tx.y -= 42 * dt; }
+  S.texts = S.texts.filter(tx => tx.age < tx.life);
+  S.booms = S.booms.filter(b => S.t - b.t < .35);
+  S.bolts = S.bolts.filter(b => S.t - b.t < .25);
+}
+function step(dt){
+  if (S.hitstop > 0){ S.hitstop -= dt; return false; }
+  S.t += dt;
+  updPlayer(dt);
+  if (S.mode === 'play'){
+    if (S.e && S.e.hp > 0) updBoss(dt);
+    if (S.mode === 'play') updMobs(dt);
+    if (S.mode === 'play') updLevel(dt);
+  }
+  if (S.mode === 'play'){ updShots(dt); updPShots(dt); updQuakes(dt); updBombs(); updTraps(); }
+  updFx(dt);
+  return true;
+}
+
+/* ===================== ÇİZİM ===================== */
+function rr(x, y, w, h, r){ ctx.beginPath(); ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r); ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath(); }
+function drawGear(cx, cy, r, teeth, rot, col){
+  ctx.fillStyle = col; ctx.beginPath();
+  for (let i = 0; i < teeth * 2; i++){
+    const a = rot + i * Math.PI / teeth, rad = i % 2 ? r : r * 1.18;
+    const a2 = a + Math.PI / teeth;
+    ctx.lineTo(cx + Math.cos(a) * rad, cy + Math.sin(a) * rad); ctx.lineTo(cx + Math.cos(a2) * rad, cy + Math.sin(a2) * rad);
+  }
+  ctx.closePath(); ctx.fill();
+}
+/* her bölümün kendi arka planı */
+function drawBackdrop(now){
+  const P = S.ch.pal, m = S.ch.motif;
+  const g = ctx.createLinearGradient(0, 0, 0, FLOOR);
+  g.addColorStop(0, P.top); g.addColorStop(1, P.bot);
+  ctx.fillStyle = g; ctx.fillRect(-20, -20, W + 40, H + 40);
+  const T = now / 1000;
+  if (m === 'arches'){
+    ctx.fillStyle = rgba(P.wall, .55); ctx.fillRect(0, 118, W, FLOOR - 118);
+    const span = (W - 2 * WALL) / 6;
+    for (let i = 0; i < 6; i++){
+      const cx = WALL + span * (i + .5), r = 50, top = 236;
+      const ag = ctx.createLinearGradient(0, top - r, 0, FLOOR);
+      ag.addColorStop(0, P.top); ag.addColorStop(1, rgba(P.top, .55));
+      ctx.fillStyle = ag;
+      ctx.beginPath(); ctx.moveTo(cx - r, FLOOR); ctx.lineTo(cx - r, top); ctx.arc(cx, top, r, Math.PI, 0); ctx.lineTo(cx + r, FLOOR); ctx.closePath(); ctx.fill();
+      if (i > 0){
+        const tx = WALL + span * i, ty = 206, fl = .75 + .25 * Math.sin(now / 90 + i * 1.7) * Math.sin(now / 37 + i);
+        const rg = ctx.createRadialGradient(tx, ty, 0, tx, ty, 90 * fl);
+        rg.addColorStop(0, rgba(P.light, .22 * fl)); rg.addColorStop(1, rgba(P.light, 0));
+        ctx.fillStyle = rg; ctx.fillRect(tx - 100, ty - 100, 200, 200);
+        ctx.fillStyle = P.wallHi; ctx.fillRect(tx - 5, ty + 6, 10, 5);
+        ctx.fillStyle = rgba(P.light, .9); ctx.beginPath(); ctx.moveTo(tx - 4, ty + 6); ctx.quadraticCurveTo(tx, ty - 10 * fl, tx + 4, ty + 6); ctx.fill();
+      }
+    }
+  } else if (m === 'ice'){
+    ctx.fillStyle = rgba(P.wallHi, .35);
+    ctx.beginPath(); ctx.moveTo(0, FLOOR);
+    for (let x = 0; x <= W; x += 80) ctx.lineTo(x + 40, 200 + ((x * 37) % 90)), ctx.lineTo(x + 80, FLOOR - 60);
+    ctx.lineTo(W, FLOOR); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = rgba(P.mobHi, .18);
+    for (let x = 30; x < W; x += 70){ const h = 40 + (x * 13) % 60; ctx.beginPath(); ctx.moveTo(x - 14, 0); ctx.lineTo(x, h); ctx.lineTo(x + 14, 0); ctx.fill(); }
+    ctx.fillStyle = rgba(P.mobHi, .6);
+    for (let i = 0; i < 50; i++){ const x = (i * 137 + T * 20 * (1 + i % 3)) % W, y = (i * 71 + T * 30 * (1 + i % 2)) % FLOOR; ctx.fillRect(x, y, 2, 2); }
+  } else if (m === 'swamp'){
+    for (let i = 0; i < 7; i++){
+      const x = 60 + i * 140 + (i % 2) * 30;
+      ctx.fillStyle = rgba(P.top, .85); ctx.fillRect(x - 10, 120, 20, FLOOR - 120);
+      ctx.beginPath(); ctx.ellipse(x, 130, 70, 40, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = rgba(P.wallHi, .4); ctx.lineWidth = 2;
+      for (let v = -1; v <= 1; v++){ ctx.beginPath(); ctx.moveTo(x + v * 30, 150); ctx.quadraticCurveTo(x + v * 34, 200, x + v * 28, 240 + v * 20); ctx.stroke(); }
+    }
+    const fg = ctx.createLinearGradient(0, FLOOR - 120, 0, FLOOR);
+    fg.addColorStop(0, rgba(P.light, 0)); fg.addColorStop(1, rgba(P.light, .12));
+    ctx.fillStyle = fg; ctx.fillRect(0, FLOOR - 120, W, 120);
+    for (let i = 0; i < 14; i++){ const x = (i * 211 + Math.sin(T + i) * 30) % W, y = 200 + (i * 53) % 220; ctx.fillStyle = rgba(P.light, .4 + .4 * Math.sin(T * 3 + i)); ctx.fillRect(x, y, 3, 3); }
+  } else if (m === 'gears'){
+    ctx.fillStyle = rgba(P.wall, .5); ctx.fillRect(0, 140, W, 24); ctx.fillRect(0, 330, W, 16);
+    drawGear(160, 200, 70, 12, T * .3, rgba(P.wallHi, .4));
+    drawGear(290, 300, 44, 9, -T * .48, rgba(P.wallHi, .35));
+    drawGear(720, 180, 90, 14, -T * .22, rgba(P.wallHi, .35));
+    drawGear(860, 330, 50, 10, T * .4, rgba(P.wallHi, .4));
+    ctx.fillStyle = rgba(P.top, .9);
+    for (const [x, y, r] of [[160, 200, 22], [290, 300, 14], [720, 180, 28], [860, 330, 16]]){ ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill(); }
+    for (let i = 0; i < 6; i++){ const x = 100 + i * 160, y = 140 - ((T * 40 + i * 30) % 120); ctx.fillStyle = rgba(P.mobHi, .08); ctx.beginPath(); ctx.arc(x, y, 18 + ((T * 40 + i * 30) % 120) / 6, 0, Math.PI * 2); ctx.fill(); }
+  } else if (m === 'sea'){
+    for (let i = 0; i < 5; i++){
+      const x = 80 + i * 200;
+      ctx.fillStyle = rgba(P.light, .05); ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x + 60, 0); ctx.lineTo(x + 180, FLOOR); ctx.lineTo(x + 90, FLOOR); ctx.fill();
+    }
+    ctx.strokeStyle = rgba(P.wallHi, .5); ctx.lineWidth = 4; ctx.lineCap = 'round';
+    for (let i = 0; i < 12; i++){
+      const x = 40 + i * 80; ctx.beginPath(); ctx.moveTo(x, FLOOR);
+      for (let y = FLOOR; y > FLOOR - 140 - (i % 3) * 40; y -= 12) ctx.lineTo(x + Math.sin(T * 1.5 + y / 30 + i) * 10, y);
+      ctx.stroke();
+    }
+    ctx.strokeStyle = rgba(P.mobHi, .35); ctx.lineWidth = 1.5;
+    for (let i = 0; i < 26; i++){ const x = (i * 97) % W + Math.sin(T + i) * 6, y = FLOOR - ((T * 50 + i * 40) % FLOOR); ctx.beginPath(); ctx.arc(x, y, 2 + i % 3, 0, Math.PI * 2); ctx.stroke(); }
+  } else if (m === 'hell'){
+    ctx.fillStyle = rgba(P.top, .9);
+    ctx.beginPath(); ctx.moveTo(0, FLOOR);
+    for (let x = 0; x <= W; x += 60) ctx.lineTo(x + 30, 180 + ((x * 53) % 140)), ctx.lineTo(x + 60, 300 + ((x * 29) % 80));
+    ctx.lineTo(W, FLOOR); ctx.closePath(); ctx.fill();
+    const lg = ctx.createLinearGradient(0, FLOOR - 160, 0, FLOOR);
+    lg.addColorStop(0, rgba(P.light, 0)); lg.addColorStop(1, rgba(P.light, .28 + .06 * Math.sin(T * 2)));
+    ctx.fillStyle = lg; ctx.fillRect(0, FLOOR - 160, W, 160);
+    for (let i = 0; i < 30; i++){ const x = (i * 131 + Math.sin(T * 2 + i) * 20) % W, y = FLOOR - ((T * 60 + i * 37) % (FLOOR - 60)); ctx.fillStyle = rgba(P.eye, .7); ctx.fillRect(x, y, 2, 3); }
+  } else if (m === 'heaven'){
+    for (let i = 0; i < 5; i++){ const x = 100 + i * 190; ctx.fillStyle = rgba(P.mobHi, .12); ctx.fillRect(x - 18, 150, 36, FLOOR - 150); ctx.fillRect(x - 26, 140, 52, 14); }
+    for (let i = 0; i < 9; i++){
+      const x = ((i * 157 + T * 12) % (W + 200)) - 100, y = 90 + (i * 61) % 240;
+      ctx.fillStyle = rgba(P.mobHi, .16); ctx.beginPath(); ctx.ellipse(x, y, 80, 22, 0, 0, Math.PI * 2); ctx.ellipse(x + 40, y - 12, 50, 20, 0, 0, Math.PI * 2); ctx.fill();
+    }
+    const rg = ctx.createRadialGradient(W / 2, -40, 10, W / 2, -40, 420);
+    rg.addColorStop(0, rgba(P.light, .35)); rg.addColorStop(1, rgba(P.light, 0));
+    ctx.fillStyle = rg; ctx.fillRect(0, 0, W, FLOOR);
+  } else if (m === 'ruins'){
+    ctx.fillStyle = rgba(P.mobHi, .5); ctx.beginPath(); ctx.arc(800, 110, 34, 0, Math.PI * 2); ctx.fill();
+    const bs = [[40, 220, 120], [170, 160, 90], [270, 250, 110], [400, 190, 130], [540, 140, 100], [650, 230, 120], [780, 180, 140]];
+    for (const [x, top, w] of bs){
+      ctx.fillStyle = rgba(P.top, .92);
+      ctx.beginPath(); ctx.moveTo(x, FLOOR); ctx.lineTo(x, top + 20); ctx.lineTo(x + w * .3, top); ctx.lineTo(x + w * .55, top + 26); ctx.lineTo(x + w, top + 10); ctx.lineTo(x + w, FLOOR); ctx.fill();
+      for (let wy = top + 40; wy < FLOOR - 30; wy += 34) for (let wx = x + 12; wx < x + w - 16; wx += 26){
+        const lit = ((wx * 7 + wy * 3) % 11) === 0;
+        ctx.fillStyle = lit ? rgba(P.light, .5) : rgba(P.wall, .5); ctx.fillRect(wx, wy, 10, 14);
+      }
+    }
+  } else if (m === 'desert'){
+    ctx.fillStyle = rgba(P.light, .55); ctx.beginPath(); ctx.arc(760, 120, 46, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = rgba(P.wallHi, .45);
+    for (const [x, w, h] of [[120, 300, 220], [430, 220, 160], [620, 360, 260]]){ ctx.beginPath(); ctx.moveTo(x, FLOOR); ctx.lineTo(x + w / 2, FLOOR - h); ctx.lineTo(x + w, FLOOR); ctx.fill(); }
+    ctx.fillStyle = rgba(P.wall, .7);
+    for (let i = 0; i < 4; i++){ const x = 80 + i * 260; ctx.fillRect(x, 200, 30, FLOOR - 200); ctx.fillStyle = rgba(P.eye, .25); for (let y = 220; y < FLOOR - 20; y += 30) ctx.fillRect(x + 8, y, 14, 6); ctx.fillStyle = rgba(P.wall, .7); }
+  } else if (m === 'time'){
+    for (let i = 0; i < 60; i++){ ctx.fillStyle = rgba(P.mobHi, .3 + .3 * Math.sin(T * 2 + i)); ctx.fillRect((i * 151) % W, (i * 89) % FLOOR, 2, 2); }
+    for (const [x, y, r, sp] of [[200, 200, 90, .5], [700, 170, 120, -.3], [480, 360, 60, 1.2]]){
+      ctx.strokeStyle = rgba(P.wallHi, .6); ctx.lineWidth = 4; ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.stroke();
+      for (let k = 0; k < 12; k++){ const a = k * Math.PI / 6; ctx.fillStyle = rgba(P.wallHi, .7); ctx.fillRect(x + Math.cos(a) * (r - 10) - 2, y + Math.sin(a) * (r - 10) - 2, 4, 4); }
+      ctx.strokeStyle = rgba(P.light, .7); ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x + Math.cos(T * sp) * r * .8, y + Math.sin(T * sp) * r * .8); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x + Math.cos(T * sp / 12) * r * .5, y + Math.sin(T * sp / 12) * r * .5); ctx.stroke();
+    }
+  }
+}
+function drawArena(){
+  const P = S.ch.pal;
+  const wg = ctx.createLinearGradient(0, FLOOR - 40, 0, FLOOR - 6);
+  wg.addColorStop(0, rgba(P.top, 0)); wg.addColorStop(1, rgba(P.top, .5));
+  ctx.fillStyle = wg; ctx.fillRect(0, FLOOR - 40, W, 34);
+  ctx.fillStyle = P.wallHi; ctx.fillRect(0, FLOOR - 7, W, 10);
+  ctx.fillStyle = rgba('#ffffff', .06); ctx.fillRect(0, FLOOR - 7, W, 2);
+  ctx.fillStyle = P.wall; ctx.fillRect(0, FLOOR + 3, W, H - FLOOR);
+  ctx.fillStyle = rgba(P.top, .5);
+  for (let x = WALL + 40; x < W - WALL; x += 64){ ctx.fillRect(x, FLOOR + 3, 2, H - FLOOR); ctx.fillRect(x + 3, FLOOR - 7, 1, 10); }
+  ctx.fillStyle = P.wall; ctx.fillRect(0, 0, WALL, FLOOR + 3); ctx.fillRect(W - WALL, 0, WALL, FLOOR + 3);
+  ctx.fillStyle = P.wallHi; ctx.fillRect(WALL - 2, 0, 2, FLOOR - 7); ctx.fillRect(W - WALL, 0, 2, FLOOR - 7);
+  ctx.fillStyle = rgba(P.top, .4); ctx.fillRect(WALL, 0, 10, FLOOR - 7); ctx.fillRect(W - WALL - 10, 0, 10, FLOOR - 7);
+  for (const pl of S.plats){
+    const sg = ctx.createLinearGradient(0, pl.y + 14, 0, pl.y + 50);
+    sg.addColorStop(0, rgba(P.top, .6)); sg.addColorStop(1, rgba(P.top, 0));
+    ctx.fillStyle = sg; ctx.fillRect(pl.x + 12, pl.y + 14, pl.w, 36);
+    ctx.fillStyle = P.wallHi; ctx.fillRect(pl.x, pl.y - 5, pl.w, 7);
+    ctx.fillStyle = rgba('#ffffff', .07); ctx.fillRect(pl.x, pl.y - 5, pl.w, 2);
+    ctx.fillStyle = P.wall; ctx.fillRect(pl.x, pl.y + 2, pl.w, 14);
+    ctx.fillStyle = rgba(P.top, .45); ctx.fillRect(pl.x, pl.y + 12, pl.w, 4);
+    for (let x = pl.x + 38; x < pl.x + pl.w - 10; x += 44) ctx.fillRect(x, pl.y + 2, 2, 14);
+  }
+}
+function drawTraps(){
+  S.traps.forEach(tr => {
+    const ph = trapPhase(tr, S.mode === 'title' ? 0 : S.t);
+    ctx.fillStyle = rgba(C.pit, .7); ctx.fillRect(tr.x, tr.y - 3, tr.w, 4);
+    let hgt = 0, jit = 0;
+    if (ph.st === 'warn'){ hgt = 4; jit = Math.sin(S.t * 70) * 1.2; }
+    if (ph.st === 'up') hgt = ph.k < .15 ? 18 * (ph.k / .15) : ph.k > .85 ? 18 * (1 - ph.k) / .15 : 18;
+    if (ph.st === 'warn'){
+      const g = ctx.createLinearGradient(0, tr.y - 22, 0, tr.y);
+      g.addColorStop(0, rgba(C.ember, 0)); g.addColorStop(1, rgba(C.ember, .35));
+      ctx.fillStyle = g; ctx.fillRect(tr.x, tr.y - 22, tr.w, 22);
+    }
+    if (hgt <= 0) return;
+    const n = Math.floor(tr.w / 10);
+    ctx.fillStyle = ph.st === 'warn' ? C.ember : C.bone;
+    ctx.beginPath();
+    for (let i = 0; i < n; i++){ const x = tr.x + 5 + i * 10 + jit; ctx.moveTo(x - 4, tr.y - 2); ctx.lineTo(x, tr.y - 2 - hgt); ctx.lineTo(x + 4, tr.y - 2); }
+    ctx.fill();
+  });
+}
+function floorBand(x0, x1, y, col){
+  const a = clamp(Math.min(x0, x1), WALL, W - WALL), b = clamp(Math.max(x0, x1), WALL, W - WALL);
+  ctx.fillStyle = col; ctx.fillRect(a, y - 6, b - a, 8);
+}
+function dashedLine(x0, y0, x1, y1, col, wdt){
+  ctx.strokeStyle = col; ctx.lineWidth = wdt; ctx.setLineDash([8, 7]);
+  ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke();
+  ctx.setLineDash([]);
+}
+/* zemine çizilen işaretler */
+function drawTelegraphs(){
+  const t = S.t, pulse = .5 + .5 * Math.sin(t * 16);
+  const e = S.e;
+  if (e && e.hp > 0){
+    const el = e.ck - e.st, k = clamp(el / Math.max(.01, e.dur), 0, 1);
+    if (e.state === 'lungeWind') floorBand(e.x + e.face * e.w / 2, e.x + e.face * (e.w / 2 + 157 + 72), FLOOR, rgba(C.blood, .15 + .4 * k));
+    if (e.state === 'chargeWind') floorBand(e.x, e.chargeDir > 0 ? W - WALL : WALL, FLOOR, rgba(C.blood, .12 + .4 * k));
+    if (e.state === 'slamWind'){
+      const rad = 160 + e.w / 2;
+      ctx.strokeStyle = rgba(C.blood, .35 + .5 * k); ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.ellipse(e.x, FLOOR - 1, rad, 10, 0, 0, Math.PI * 2); ctx.stroke();
+      ctx.fillStyle = rgba(C.blood, .08 + .14 * k); ctx.beginPath(); ctx.ellipse(e.x, FLOOR - 1, rad, 10, 0, 0, Math.PI * 2); ctx.fill();
+    }
+    if (e.state === 'leapCrouch' || e.state === 'leapAir'){
+      ctx.strokeStyle = rgba(C.ember, .45 + .45 * pulse); ctx.lineWidth = 2.5;
+      ctx.beginPath(); ctx.ellipse(e.leapX, FLOOR - 1, 36, 7, 0, 0, Math.PI * 2); ctx.stroke();
+      ctx.fillStyle = rgba(C.ember, .5 + .3 * pulse);
+      for (const dir of [-1, 1]){ const ax = e.leapX + dir * 52; ctx.beginPath(); ctx.moveTo(ax, FLOOR - 7); ctx.lineTo(ax + dir * 10, FLOOR - 1); ctx.lineTo(ax, FLOOR + 5); ctx.closePath(); ctx.fill(); }
+    }
+    if (e.state === 'volleyWind'){
+      const [hx, hy] = handPos(e), base = Math.atan2((S.p.y - S.p.h / 2) - hy, S.p.x - hx);
+      const offs = e.volleyN === 5 ? [-.3, -.15, 0, .15, .3] : [-.2, 0, .2];
+      for (const o of offs) dashedLine(hx, hy, hx + Math.cos(base + o) * 420, hy + Math.sin(base + o) * 420, rgba(C.ember, .15 + .5 * k), 1.5 + k);
+    }
+    if (e.state === 'summonWind'){
+      for (const x of [e.x < 480 ? 900 : 60]){ ctx.strokeStyle = rgba(e.pal.light, .4 + .5 * pulse); ctx.lineWidth = 2; ctx.beginPath(); ctx.ellipse(x, FLOOR - 1, 26, 6, 0, 0, Math.PI * 2); ctx.stroke(); }
+    }
+    if (e.state === 'rowWind' || e.state === 'rowStrike'){
+      for (const r of e.rows){
+        const [top, bot] = ROW_BAND[r];
+        if (e.state === 'rowWind'){
+          const pl = .5 + .5 * Math.sin(t * (14 + 20 * k));
+          ctx.fillStyle = rgba(C.ember, .05 + .1 * k * pl); ctx.fillRect(WALL, top, W - 2 * WALL, bot - top);
+          ctx.fillStyle = rgba(C.ember, .5 + .4 * k); ctx.fillRect(WALL, top, W - 2 * WALL, 2); ctx.fillRect(WALL, bot - 2, W - 2 * WALL, 2);
+          ctx.font = `700 26px ${F_DISPLAY}`; ctx.textAlign = 'left'; ctx.fillStyle = rgba(C.ember, .6 + .4 * pl);
+          ctx.fillText(r + '. sıra', WALL + 10, top + 30);
+        } else {
+          ctx.fillStyle = rgba(C.ember, .2); ctx.fillRect(WALL, top, W - 2 * WALL, bot - top);
+          ctx.strokeStyle = rgba(C.ember, .85); ctx.lineWidth = 2; ctx.lineCap = 'round';
+          const fr = Math.floor(t * 60);
+          ctx.beginPath();
+          for (let i = 0; i < 26; i++){
+            const x = WALL + ((i * 97 + fr * 31) % (W - 2 * WALL));
+            const y0 = top + ((i * 53 + fr * 47) % Math.max(1, bot - top - 30));
+            ctx.moveTo(x, y0); ctx.lineTo(x - 4, y0 + 28);
+          }
+          ctx.stroke();
+        }
+      }
+    }
+  }
+  for (const m of S.mobs){
+    const k = clamp((m.ck - m.st) / Math.max(.01, m.dur), 0, 1);
+    if (S.t < m.invisUntil) continue;
+    if (m.a === 'tank' && m.state === 'bashWind') floorBand(m.x + m.face * 8, m.x + m.face * 62, m.y, rgba(C.blood, .15 + .4 * k));
+    if (m.a === 'runner' && m.state === 'wind') floorBand(m.x, m.x + m.face * 155, m.y, rgba(C.blood, .15 + .4 * k));
+  }
+  for (const b of S.bombs){
+    const k = clamp(1 - (b.at - S.t) / .8, 0, 1);
+    ctx.strokeStyle = rgba(AFFIX.patlayan.col, .4 + .5 * pulse); ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(b.x, b.y - 20, b.r * (.4 + .6 * k), 0, Math.PI * 2); ctx.stroke();
+  }
+}
+function surfaceBelow(x, y){
+  let s = FLOOR;
+  for (const pl of S.plats) if (x > pl.x && x < pl.x + pl.w && pl.y >= y - 1 && pl.y < s) s = pl.y;
+  return s;
+}
+function drawShadow(x, y, w){
+  const s = surfaceBelow(x, y);
+  const k = clamp(1 - (s - y) / 240, .25, 1);
+  ctx.fillStyle = rgba(C.pit, .6 * k);
+  ctx.beginPath(); ctx.ellipse(x, s - 1, w * .8 * k + 4, 4.5 * k + 1, 0, 0, Math.PI * 2); ctx.fill();
+}
+function drawAlert(x, y, col){
+  ctx.globalAlpha = .65 + .35 * Math.abs(Math.sin(S.t * 14));
+  ctx.textAlign = 'center'; ctx.font = `700 28px ${F_DISPLAY}`; ctx.fillStyle = col;
+  ctx.fillText('!', x, y);
+  ctx.globalAlpha = 1;
+}
+function drawSpear(gx, gy, ang, len, glow, alpha){
+  const c = Math.cos(ang), s = Math.sin(ang);
+  const tx = gx + c * len * .55, ty = gy + s * len * .55, bx = gx - c * len * .45, by = gy - s * len * .45;
+  ctx.globalAlpha = alpha;
+  ctx.strokeStyle = C.dust; ctx.lineWidth = 3; ctx.lineCap = 'round';
+  ctx.beginPath(); ctx.moveTo(bx, by); ctx.lineTo(tx - c * 10, ty - s * 10); ctx.stroke();
+  ctx.fillStyle = C.ember;
+  ctx.beginPath(); ctx.moveTo(tx, ty); ctx.lineTo(tx - c * 15 - s * 5, ty - s * 15 + c * 5); ctx.lineTo(tx - c * 15 + s * 5, ty - s * 15 - c * 5); ctx.closePath(); ctx.fill();
+  if (glow > 0){
+    const r = 6 + glow * 14, g = ctx.createRadialGradient(tx, ty, 0, tx, ty, r);
+    g.addColorStop(0, rgba(C.ember, .9 * glow)); g.addColorStop(1, rgba(C.ember, 0));
+    ctx.fillStyle = g; ctx.beginPath(); ctx.arc(tx, ty, r, 0, Math.PI * 2); ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+}
+function drawLineShot(s, alpha, col){
+  const c = Math.cos(s.ang), sn = Math.sin(s.ang), h = s.len / 2;
+  ctx.globalAlpha = alpha;
+  ctx.strokeStyle = s.kind === 'bullet' ? col : C.dust; ctx.lineWidth = s.kind === 'bullet' ? 4 : 2; ctx.lineCap = 'round';
+  ctx.beginPath(); ctx.moveTo(s.x - c * h, s.y - sn * h); ctx.lineTo(s.x + c * (h - (s.kind === 'bullet' ? 0 : 6)), s.y + sn * (h - (s.kind === 'bullet' ? 0 : 6))); ctx.stroke();
+  if (s.kind !== 'bullet'){
+    ctx.fillStyle = col;
+    ctx.beginPath(); ctx.moveTo(s.x + c * h, s.y + sn * h); ctx.lineTo(s.x + c * (h - 9) - sn * 3.5, s.y + sn * (h - 9) + c * 3.5); ctx.lineTo(s.x + c * (h - 9) + sn * 3.5, s.y + sn * (h - 9) - c * 3.5); ctx.closePath(); ctx.fill();
+  }
+  if (s.kind === 'arrow'){
+    ctx.strokeStyle = C.bone; ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.moveTo(s.x - c * h, s.y - sn * h); ctx.lineTo(s.x - c * (h - 7) - sn * 4, s.y - sn * (h - 7) + c * 4); ctx.moveTo(s.x - c * h, s.y - sn * h); ctx.lineTo(s.x - c * (h - 7) + sn * 4, s.y - sn * (h - 7) - c * 4); ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+}
+function drawOrb(x, y, r, col){
+  const g = ctx.createRadialGradient(x, y, 1, x, y, r * 2.2);
+  g.addColorStop(0, rgba(col, .95)); g.addColorStop(.45, rgba(col, .6)); g.addColorStop(1, rgba(col, 0));
+  ctx.fillStyle = g; ctx.beginPath(); ctx.arc(x, y, r * 2.2, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = rgba('#ffffff', .8); ctx.beginPath(); ctx.arc(x - r * .3, y - r * .3, r * .35, 0, Math.PI * 2); ctx.fill();
+}
+function drawShots(){
+  for (const s of S.shots){
+    const a = s.stuck ? Math.min(1, s.life / .4) : 1, col = s.el ? elCol(s.el) : C.ember;
+    if (s.kind === 'spear') drawSpear(s.x, s.y, s.ang, 86, 0, a);
+    else if (s.kind === 'orb') drawOrb(s.x, s.y, s.r, s.el ? elCol(s.el) : S.ch.pal.light);
+    else drawLineShot(s, a, col);
+  }
+  for (const s of S.pshots){
+    const col = s.el ? elCol(s.el) : C.bone;
+    if (s.kind === 'orb') drawOrb(s.x, s.y, 7, s.el ? col : C.frost);
+    else drawLineShot(s, 1, col);
+  }
+  for (const b of S.booms){
+    const k = (S.t - b.t) / .35;
+    ctx.globalAlpha = 1 - k;
+    if (b.flat){ ctx.strokeStyle = b.col; ctx.lineWidth = 4; ctx.beginPath(); ctx.ellipse(b.x, b.y - 1, b.r * (.3 + .7 * k), 12, 0, 0, Math.PI * 2); ctx.stroke(); }
+    else { ctx.fillStyle = rgba(b.col, .35); ctx.beginPath(); ctx.arc(b.x, b.y, b.r * (.4 + .6 * k), 0, Math.PI * 2); ctx.fill(); ctx.strokeStyle = b.col; ctx.lineWidth = 3; ctx.stroke(); }
+    ctx.globalAlpha = 1;
+  }
+  for (const b of S.bolts){
+    const k = (S.t - b.t) / .25;
+    ctx.globalAlpha = 1 - k;
+    ctx.strokeStyle = elCol('yildirim'); ctx.lineWidth = 4; ctx.lineCap = 'round';
+    ctx.beginPath(); let x = b.x + rand(-10, 10), y = 0; ctx.moveTo(x, y);
+    while (y < b.y){ y += 30; x = b.x + rand(-18, 18); ctx.lineTo(x, Math.min(y, b.y)); }
+    ctx.stroke();
+    ctx.fillStyle = rgba(elCol('yildirim'), .25); ctx.beginPath(); ctx.arc(b.x, b.y, 55, 0, Math.PI * 2); ctx.fill();
+    ctx.globalAlpha = 1;
+  }
+}
+function drawQuakes(){
+  for (const w of S.quakes){
+    ctx.fillStyle = rgba(C.ember, .8);
+    ctx.beginPath(); ctx.moveTo(w.x - 16, FLOOR); ctx.quadraticCurveTo(w.x + w.dir * 8, FLOOR - 36, w.x + 16, FLOOR); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = rgba(C.bone, .5);
+    ctx.beginPath(); ctx.moveTo(w.x - 8, FLOOR); ctx.quadraticCurveTo(w.x + w.dir * 6, FLOOR - 18, w.x + 8, FLOOR); ctx.closePath(); ctx.fill();
+  }
+}
+/* ---------- boss çizimi ---------- */
+function drawHead(e, hx, hy, r, col){
+  const P = e.pal, f = e.face, hit = e.flash > 0;
+  const hc = hit ? C.bone : col;
+  switch (e.def.head){
+    case 'helmet':
+      ctx.fillStyle = hit ? C.bone : P.wallHi;
+      ctx.beginPath(); ctx.moveTo(hx - r * 1.3, hy + r); ctx.lineTo(hx - r, hy - r); ctx.lineTo(hx + r, hy - r); ctx.lineTo(hx + r * 1.3, hy + r); ctx.closePath(); ctx.fill();
+      ctx.fillStyle = e.phase === 2 ? P.eye : rgba(P.eye, .75); ctx.fillRect(hx + f * 2 - r * .6, hy - 2, r * 1.2, 3);
+      return;
+    case 'none':
+      ctx.fillStyle = P.eye; ctx.fillRect(hx - r, hy + r * .2, r * 2, 4);
+      return;
+    case 'beast':
+      ctx.fillStyle = hc; ctx.beginPath(); ctx.ellipse(hx + f * r * .3, hy, r * 1.3, r, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.moveTo(hx - r * .9, hy - r * .6); ctx.lineTo(hx - r * .5, hy - r * 1.5); ctx.lineTo(hx - r * .1, hy - r * .8); ctx.fill();
+      ctx.beginPath(); ctx.moveTo(hx + r * .9, hy - r * .6); ctx.lineTo(hx + r * .5, hy - r * 1.5); ctx.lineTo(hx + r * .1, hy - r * .8); ctx.fill();
+      break;
+    default:
+      ctx.fillStyle = hc; ctx.beginPath(); ctx.arc(hx, hy, r, 0, Math.PI * 2); ctx.fill();
+  }
+  if (e.def.head === 'crown'){
+    ctx.fillStyle = P.light; ctx.beginPath(); ctx.moveTo(hx - r, hy - r * .5);
+    for (let i = 0; i < 5; i++) ctx.lineTo(hx - r + i * r / 2, i % 2 ? hy - r * .8 : hy - r * 1.6);
+    ctx.lineTo(hx + r, hy - r * .5); ctx.closePath(); ctx.fill();
+  } else if (e.def.head === 'hat'){
+    ctx.fillStyle = rgba(P.top, 1); ctx.fillRect(hx - r * 1.6, hy - r * .7, r * 3.2, 4);
+    ctx.beginPath(); ctx.moveTo(hx - r, hy - r * .6); ctx.lineTo(hx - f * r * .6, hy - r * 2.8); ctx.lineTo(hx + r, hy - r * .6); ctx.fill();
+  } else if (e.def.head === 'horns'){
+    ctx.strokeStyle = C.bone; ctx.lineWidth = 4; ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.moveTo(hx - r * .6, hy - r * .6); ctx.quadraticCurveTo(hx - r * 1.6, hy - r * 1.2, hx - r * 1.2, hy - r * 2.2);
+    ctx.moveTo(hx + r * .6, hy - r * .6); ctx.quadraticCurveTo(hx + r * 1.6, hy - r * 1.2, hx + r * 1.2, hy - r * 2.2); ctx.stroke();
+  } else if (e.def.head === 'halo'){
+    ctx.strokeStyle = rgba(P.light, .9); ctx.lineWidth = 3; ctx.beginPath(); ctx.ellipse(hx, hy - r * 1.6, r * 1.1, r * .35, 0, 0, Math.PI * 2); ctx.stroke();
+  }
+  ctx.fillStyle = P.eye;
+  if (e.def.head === 'beast'){ ctx.fillRect(hx + f * r * .6 - 2, hy - 3, 4, 4); ctx.fillRect(hx + f * r * .1 - 2, hy - 3, 4, 4); }
+  else ctx.fillRect(hx + f * r * .35 - 1.5, hy - 2, 3, 4);
+}
+function drawBoss(){
+  const e = S.e, t = S.t, el = e.ck - e.st, f = e.face, def = e.def, P = e.pal;
+  const crouch = ['leapCrouch', 'throwPrep', 'slamWind'].includes(e.state) ? .86 : 1;
+  const h = e.h * crouch, w = e.w;
+  const hit = e.flash > 0;
+  if (e.phase === 2 && !hit){
+    const ag = ctx.createRadialGradient(e.x, e.y - h / 2, 4, e.x, e.y - h / 2, w + 30);
+    ag.addColorStop(0, rgba(P.light, .16)); ag.addColorStop(1, rgba(P.light, 0));
+    ctx.fillStyle = ag; ctx.fillRect(e.x - w - 30, e.y - h - 40, (w + 30) * 2, h + 50);
+  }
+  if (t < e.slowUntil){ ctx.fillStyle = rgba(elCol('buz'), .18); ctx.fillRect(e.x - w / 2 - 6, e.y - h - 6, w + 12, h + 6); }
+  const hr = Math.max(9, Math.min(16, w * .28));
+  const bodyTop = e.y - h + hr * 1.6;
+  ctx.fillStyle = hit ? C.bone : def.body; rr(e.x - w / 2, bodyTop, w, e.y - bodyTop, 7); ctx.fill();
+  ctx.fillStyle = rgba(C.pit, .25); rr(e.x - w / 2, e.y - 16, w, 16, 5); ctx.fill();
+  if (def.head !== 'none') drawHead(e, e.x + f * 2, bodyTop - hr * .7, hr, P.mobHi);
+  else drawHead(e, e.x, bodyTop + 6, w * .3, P.mobHi);
+  /* silah ve atış pozu */
+  const [hx0, hy0] = handPos(e);
+  if (def.weapon === 'spear'){
+    let gx, gy, ang, glow = 0;
+    switch (e.state){
+      case 'throwPrep': gx = e.x - f * 10; gy = e.y - h + 2; ang = -Math.PI / 2 + f * .5; glow = clamp(el / e.dur, 0, 1); break;
+      case 'jump': case 'hang': gx = hx0; gy = hy0; { const [tx, ty] = aimAt(gx, gy, bossProjSpeed(def.proj), .85); ang = Math.atan2(ty - gy, tx - gx); } glow = e.state === 'hang' ? .5 + .5 * Math.sin(t * 40) : .4; break;
+      case 'lungeWind': { const k = Math.min(1, el / (e.dur * .8)); gx = e.x - f * (4 + 14 * k); gy = e.y - 37; ang = f > 0 ? 0 : Math.PI; glow = k; break; }
+      case 'lunge': case 'charge': gx = e.x + f * 34; gy = e.y - 37; ang = f > 0 ? 0 : Math.PI; break;
+      case 'leapCrouch': case 'leapAir': gx = e.x + f * 14; gy = e.y - h * .6; ang = f > 0 ? -.6 : Math.PI + .6; break;
+      case 'rowWind': case 'summonWind': case 'volleyWind': gx = e.x + f * 4; gy = e.y - h - 14; ang = -Math.PI / 2; glow = .4 + .6 * Math.abs(Math.sin(t * 18)); break;
+      case 'rowStrike': case 'slamWind': gx = e.x + f * 16; gy = e.y - 30; ang = Math.PI / 2; break;
+      default: gx = e.x + f * 21; gy = e.y - 30; ang = -Math.PI / 2 + f * .12;
+    }
+    if (e.held || def.proj !== 'spear'){
+      ctx.strokeStyle = hit ? C.bone : def.body; ctx.lineWidth = 6; ctx.lineCap = 'round';
+      ctx.beginPath(); ctx.moveTo(e.x + f * 6, bodyTop + 8); ctx.lineTo(gx, gy); ctx.stroke();
+      drawSpear(gx, gy, ang, 86, glow, 1);
+    }
+  } else if (def.weapon === 'staff'){
+    const sx = e.x + f * (w / 2 + 6), raise = ['rowWind', 'summonWind', 'volleyWind', 'throwPrep', 'jump', 'hang'].includes(e.state) ? 18 : 0;
+    ctx.strokeStyle = C.dust; ctx.lineWidth = 3; ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.moveTo(sx, e.y - 4 - raise); ctx.lineTo(sx, e.y - h - 6 - raise); ctx.stroke();
+    const glow = e.state.endsWith('Wind') || e.state === 'jump' || e.state === 'hang' || e.state === 'throwPrep';
+    drawOrb(sx, e.y - h - 10 - raise, glow ? 7 + 2 * Math.sin(t * 20) : 5, e.el ? elCol(e.el) : P.light);
+  } else if (def.weapon === 'sword' || def.weapon === 'hammer'){
+    const swing = ['lunge', 'charge', 'slamWind', 'rowStrike'].includes(e.state);
+    const ang = swing ? (f > 0 ? .2 : Math.PI - .2) : -Math.PI / 2 + f * .4;
+    const gx = e.x + f * (w / 2 + 2), gy = e.y - h * .55, L = def.weapon === 'hammer' ? 56 : 50;
+    ctx.strokeStyle = def.weapon === 'hammer' ? C.rust : C.bone; ctx.lineWidth = def.weapon === 'hammer' ? 5 : 4; ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.moveTo(gx, gy); ctx.lineTo(gx + Math.cos(ang) * L, gy + Math.sin(ang) * L); ctx.stroke();
+    if (def.weapon === 'hammer'){ ctx.fillStyle = P.wallHi; ctx.save(); ctx.translate(gx + Math.cos(ang) * L, gy + Math.sin(ang) * L); ctx.rotate(ang); ctx.fillRect(-8, -14, 16, 28); ctx.restore(); }
+    if (e.state.endsWith('Wind')){ ctx.fillStyle = rgba(C.blood, .5 + .5 * Math.sin(t * 20)); ctx.beginPath(); ctx.arc(gx + Math.cos(ang) * L, gy + Math.sin(ang) * L, 6, 0, Math.PI * 2); ctx.fill(); }
+  } else if (def.weapon === 'claws'){
+    ctx.strokeStyle = C.bone; ctx.lineWidth = 3; ctx.lineCap = 'round';
+    const cx = e.x + f * (w / 2 + 4), cy = e.y - h * .45;
+    for (let i = -1; i <= 1; i++){ ctx.beginPath(); ctx.moveTo(cx, cy + i * 7); ctx.lineTo(cx + f * 16, cy + i * 9 + 4); ctx.stroke(); }
+  } else if (def.weapon === 'drill'){
+    const cx = e.x + f * w / 2, cy = e.y - h * .45;
+    ctx.fillStyle = P.wallHi; ctx.beginPath(); ctx.moveTo(cx, cy - 16); ctx.lineTo(cx + f * 40, cy); ctx.lineTo(cx, cy + 16); ctx.fill();
+    ctx.strokeStyle = rgba(C.pit, .5); ctx.lineWidth = 2;
+    for (let i = 0; i < 4; i++){ const o = ((t * 60 + i * 10) % 40); ctx.beginPath(); ctx.moveTo(cx + f * o, cy - 16 * (1 - o / 40)); ctx.lineTo(cx + f * (o + 6), cy + 16 * (1 - (o + 6) / 40)); ctx.stroke(); }
+  }
+  if (def.weapon !== 'spear' && (e.state === 'jump' || e.state === 'hang')){
+    const [tx, ty] = aimAt(hx0, hy0, bossProjSpeed(def.proj), .85);
+    if (e.held) drawOrb(hx0, hy0, 6, e.el ? elCol(e.el) : P.light);
+    void tx; void ty;
+  }
+  if (e.state === 'jump' || e.state === 'hang'){
+    const [tx, ty] = aimAt(hx0, hy0, bossProjSpeed(def.proj), .85);
+    const ang = Math.atan2(ty - hy0, tx - hx0);
+    const k = e.state === 'hang' ? .75 + .25 * Math.sin(t * 30) : clamp(el / (set.tell / 1000), 0, 1);
+    dashedLine(hx0 + Math.cos(ang) * 50, hy0 + Math.sin(ang) * 50, tx, ty, rgba(C.ember, .18 + .55 * k), 1.5 + k);
+  }
+  const alertY = e.y - h - hr * 2.6 - 10;
+  const AL = {throwPrep:C.ember, lungeWind:C.blood, leapCrouch:C.bone, rowWind:C.ember, volleyWind:C.ember, chargeWind:C.blood, slamWind:C.blood, summonWind:C.frost};
+  if (AL[e.state]) drawAlert(e.x, alertY, AL[e.state]);
+}
+/* ---------- mob çizimi ---------- */
+function drawSkull(x, y, col, f, hot, eye){
+  ctx.fillStyle = col;
+  ctx.beginPath(); ctx.arc(x, y, 8, 0, Math.PI * 2); ctx.fill();
+  ctx.fillRect(x - 5 + f * 2, y + 4, 8, 5);
+  ctx.fillStyle = hot ? eye : rgba(eye, .6);
+  ctx.fillRect(x + f * 3 - 1.5, y - 2, 3, hot ? 4 : 3);
+}
+function drawRibs(x, y, w, h, col){
+  ctx.fillStyle = col; rr(x, y, w, Math.max(4, h), 4); ctx.fill();
+  ctx.fillStyle = rgba(C.pit, .4);
+  for (let i = 1; i <= 3; i++) ctx.fillRect(x + 3, y + i * h / 4.2, w - 6, 2);
+}
+function mobTint(m){
+  if (!m.aff.length) return null;
+  if (m.enraged) return AFFIX.ofkeli.col;
+  if (m.aff.includes('zirhli') && m.hp > m.max * .6) return AFFIX.zirhli.col;
+  if (m.aff.includes('yenilenen') && m.hp < m.max && S.t - m.lastHitT > 2) return AFFIX.yenilenen.col;
+  if (m.aff.includes('patlayan')) return AFFIX.patlayan.col;
+  return null;
+}
+function drawMob(m){
+  const t = S.t, el = m.ck - m.st, f = m.face, P = m.pal;
+  const rise = m.state === 'spawn' ? clamp(el / m.dur, 0, 1) : 1;
+  const invis = t < m.invisUntil;
+  ctx.save();
+  if (invis) ctx.globalAlpha = .14 + .06 * Math.sin(t * 14);
+  if (rise < 1){ ctx.beginPath(); ctx.rect(m.x - 70, 0, 140, m.home.y); ctx.clip(); }
+  const y = m.y + (1 - rise) * (m.h + 6);
+  const pulse = .5 + .5 * Math.sin(t * 18);
+  /* elit durum rengi: öfkeli mor, zırhı aktif kırmızı, can yeniliyorsa sarı, patlayan turuncu nabız */
+  const tint = mobTint(m);
+  const tk = tint ? (tint === AFFIX.patlayan.col ? .35 + .3 * Math.sin(t * 6) : .68) : 0;
+  const col = m.flash > 0 ? C.bone : tint ? hexMix(P.mob, tint, tk) : P.mob;
+  const hi = m.flash > 0 ? C.bone : tint ? hexMix(P.mobHi, tint, tk * .7) : P.mobHi;
+  if (tint && !invis && rise >= 1){
+    const ag = ctx.createRadialGradient(m.x, y - m.h / 2, 4, m.x, y - m.h / 2, m.h * .95);
+    ag.addColorStop(0, rgba(tint, .34)); ag.addColorStop(1, rgba(tint, 0));
+    ctx.fillStyle = ag; ctx.fillRect(m.x - m.h, y - m.h * 1.4, m.h * 2, m.h * 1.6);
+  }
+  if (invis){ ctx.strokeStyle = rgba(AFFIX.gorunmez.col, .9); ctx.lineWidth = 1.5; ctx.setLineDash([3, 4]); ctx.strokeRect(m.x - m.w / 2 - 3, y - m.h - 3, m.w + 6, m.h + 3); ctx.setLineDash([]); }
+  if (m.a === 'tank'){
+    ctx.fillStyle = col; ctx.fillRect(m.x - 10, y - 16, 6, 16); ctx.fillRect(m.x + 4, y - 16, 6, 16);
+    drawRibs(m.x - 14, y - 44, 28, 30, col);
+    drawSkull(m.x + f * 2, y - 52, hi, f, m.state === 'bashWind', P.eye);
+    let sx = m.x + f * 19, sy = y - 50, sh = 44;
+    if (m.state === 'bashWind') sx -= f * 4;
+    if (m.state === 'bash') sx += f * 12;
+    if (m.state === 'open'){ sx = m.x + f * 12; sy = y - 24; sh = 24; }
+    ctx.fillStyle = P.wallHi; rr(sx - 6, sy, 12, sh, 3); ctx.fill();
+    ctx.strokeStyle = m.state === 'bashWind' ? rgba(C.blood, .5 + .5 * pulse) : rgba(P.eye, .5); ctx.lineWidth = m.state === 'bashWind' ? 3 : 2;
+    rr(sx - 6, sy, 12, sh, 3); ctx.stroke();
+    if (m.turnT > 0){ ctx.fillStyle = rgba(C.bone, .5); ctx.fillRect(m.x - 12, y - m.h - 10, 24 * (m.turnT / .7), 2); }
+  } else if (m.a === 'ranged'){
+    ctx.fillStyle = col; ctx.fillRect(m.x - 7, y - 14, 4, 14); ctx.fillRect(m.x + 3, y - 14, 4, 14);
+    drawRibs(m.x - 9, y - 38, 18, 24, col);
+    drawSkull(m.x, y - 44, hi, f, m.state === 'aim', P.eye);
+    const bx = m.x + f * 12, by = y - 30;
+    if (m.proj === 'arrow'){
+      const pull = m.state === 'aim' ? clamp(el / (m.dur - .18), 0, 1) * 8 : 0;
+      ctx.strokeStyle = C.rust; ctx.lineWidth = 3; ctx.beginPath();
+      if (f > 0) ctx.arc(bx - 6, by, 16, -1.1, 1.1); else ctx.arc(bx + 6, by, 16, Math.PI - 1.1, Math.PI + 1.1);
+      ctx.stroke();
+      const ex = bx - f * 6 + f * Math.cos(1.1) * 16;
+      ctx.strokeStyle = rgba(C.bone, .7); ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(ex, by - Math.sin(1.1) * 16); ctx.lineTo(ex - f * pull, by); ctx.lineTo(ex, by + Math.sin(1.1) * 16); ctx.stroke();
+    } else if (m.proj === 'bullet'){
+      ctx.fillStyle = P.wallHi; ctx.fillRect(f > 0 ? bx - 4 : bx - 18, by - 4, 22, 7);
+    } else {
+      drawOrb(bx, by - 4, m.state === 'aim' ? 5 + 2 * pulse : 3.5, m.el ? elCol(m.el) : P.light);
+    }
+    if (m.state === 'aim' && rise >= 1 && !invis){
+      const locked = el >= m.dur - .18, k = clamp(el / (m.dur - .18), 0, 1);
+      dashedLine(bx, by, m.aimX, m.aimY, locked ? rgba(C.ember, .6 + .4 * pulse) : rgba(C.ember, .12 + .3 * k), locked ? 2.5 : 1.5);
+    }
+  } else {
+    const crouch = m.state === 'wind' ? .78 : 1, top = y - m.h * crouch;
+    ctx.fillStyle = col; ctx.fillRect(m.x - 8, y - 12, 5, 12); ctx.fillRect(m.x + 3, y - 12, 5, 12);
+    drawRibs(m.x - 10, top + 14, 20, y - 12 - (top + 14), col);
+    drawSkull(m.x + f * 5, top + 7, hi, f, m.state === 'wind' || m.state === 'dash', P.eye);
+    ctx.strokeStyle = C.bone; ctx.lineWidth = 2.5; ctx.lineCap = 'round';
+    const hy = top + 24;
+    ctx.beginPath(); ctx.moveTo(m.x + f * 8, hy); ctx.lineTo(m.x + f * 24, hy + (m.state === 'dash' ? 0 : 8)); ctx.stroke();
+    if (m.state === 'dash'){
+      ctx.strokeStyle = rgba(C.dust, .4); ctx.lineWidth = 2; ctx.beginPath();
+      for (let i = 0; i < 3; i++){ ctx.moveTo(m.x - f * (14 + i * 10), top + 12 + i * 9); ctx.lineTo(m.x - f * (34 + i * 12), top + 12 + i * 9); }
+      ctx.stroke();
+    }
+  }
+  if (t < m.slowUntil){ ctx.fillStyle = rgba(elCol('buz'), .22); ctx.fillRect(m.x - m.w / 2 - 4, y - m.h - 4, m.w + 8, m.h + 4); }
+  ctx.restore();
+  if (invis || rise < 1) return;
+  if (t < m.poisonUntil){ ctx.fillStyle = rgba(elCol('zehir'), .8); for (let i = 0; i < 3; i++) ctx.fillRect(m.x - 10 + i * 9, m.y - m.h - 4 - ((t * 30 + i * 7) % 14), 3, 3); }
+  if (t < m.stunUntil){ ctx.fillStyle = elCol('yildirim'); for (let i = 0; i < 3; i++){ const a = t * 6 + i * 2.1; ctx.fillRect(m.x + Math.cos(a) * 14 - 2, m.y - m.h - 8 + Math.sin(a) * 4 - 2, 4, 4); } }
+  if (m.hp < m.max){
+    ctx.fillStyle = rgba(C.pit, .8); ctx.fillRect(m.x - 14, m.y - m.h - 16, 28, 4);
+    ctx.fillStyle = C.blood; ctx.fillRect(m.x - 14, m.y - m.h - 16, 28 * m.hp / m.max, 4);
+  }
+  if (m.aff.length){
+    ctx.font = `600 10px ${F_MONO}`; ctx.textAlign = 'center';
+    ctx.fillStyle = AFFIX[m.aff[0]].col;
+    ctx.fillText(m.aff.map(a => AFFIX[a].ad.toUpperCase()).join(' · '), m.x, m.y - m.h - 22);
+  }
+  if (m.a === 'tank' && m.state === 'bashWind') drawAlert(m.x, m.y - m.h - 26, C.blood);
+  if (m.a === 'runner' && m.state === 'wind') drawAlert(m.x, m.y - m.h - 20, C.blood);
+}
+/* ---------- oyuncu çizimi (eşyalara göre) ---------- */
+function gearCls(slot){ const it = ITEM_BY_ID[equip[slot]]; return it && it.cls ? it.cls : null; }
+function drawBodyShape(x, y, col, outfit){
+  ctx.fillStyle = col; rr(x - 11, y - 30, 22, 30, 5); ctx.fill();
+  ctx.beginPath(); ctx.arc(x, y - 38, 8, 0, Math.PI * 2); ctx.fill();
+  if (outfit){ ctx.fillStyle = outfit; rr(x - 11, y - 30, 22, 18, 5); ctx.fill(); }
+  ctx.fillStyle = rgba(C.pit, .22); rr(x - 11, y - 11, 22, 11, 4); ctx.fill();
+}
+function drawPlayer(){
+  const p = S.p, t = S.t, st = p.st, w = st.wd, f = p.face;
+  const ifr = t < p.ifrUntil;
+  const dodging = t < p.dodgeUntil;
+  if (S.mode === 'play' && t < p.hurtUntil && Math.floor(t * 16) % 2 === 0) return;
+  const body = gearCls('kiyafet'), hat = gearCls('sapka'), pants = gearCls('pantolon');
+  const outfit = body ? CLASSES[body].col : null;
+  if (dodging){
+    for (let k = 3; k >= 1; k--){ ctx.globalAlpha = .16 * (4 - k); drawBodyShape(p.x - p.dodgeDir * k * 15, p.y, C.frost); }
+    ctx.globalAlpha = 1;
+  }
+  drawBodyShape(p.x, p.y, ifr ? C.frost : C.bone, ifr ? null : outfit);
+  if (pants && !ifr){ ctx.fillStyle = rgba(CLASSES[pants].col, .9); ctx.fillRect(p.x - 10, p.y - 12, 8, 12); ctx.fillRect(p.x + 2, p.y - 12, 8, 12); }
+  ctx.fillStyle = C.pit; ctx.fillRect(p.x + f * 3 - 1.5, p.y - 40, 3, 3);
+  /* şapka */
+  if (hat){
+    const hc = CLASSES[hat].col;
+    ctx.fillStyle = hc;
+    if (hat === 'okcu'){ ctx.beginPath(); ctx.moveTo(p.x - 10, p.y - 36); ctx.lineTo(p.x - f * 6, p.y - 52); ctx.lineTo(p.x + 10, p.y - 36); ctx.closePath(); ctx.fill(); }
+    else if (hat === 'suikastci'){ ctx.fillRect(p.x - 9, p.y - 41, 18, 5); }
+    else if (hat === 'tank'){ ctx.fillRect(p.x - 10, p.y - 47, 20, 10); ctx.fillStyle = C.pit; ctx.fillRect(p.x + f * 2 - 5, p.y - 41, 10, 2); }
+    else { ctx.fillRect(p.x - 13, p.y - 44, 26, 3); ctx.beginPath(); ctx.moveTo(p.x - 8, p.y - 44); ctx.lineTo(p.x - f * 4, p.y - 64); ctx.lineTo(p.x + 8, p.y - 44); ctx.fill(); }
+  }
+  /* silah */
+  const ae = t - p.atkT, aimA = Math.atan2(mouse.y - (p.y - 30), mouse.x - p.x);
+  ctx.lineCap = 'round';
+  if (w.kind === 'bow'){
+    const a = Math.abs(aimA) < Math.PI / 2 === (f > 0) ? aimA : (f > 0 ? 0 : Math.PI);
+    const bx = p.x + Math.cos(a) * 14, by = p.y - 30 + Math.sin(a) * 14;
+    ctx.strokeStyle = C.rust; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.arc(bx - Math.cos(a) * 6, by - Math.sin(a) * 6, 15, a - 1.1, a + 1.1); ctx.stroke();
+    if (S.mode === 'play' && !paused){ ctx.strokeStyle = rgba(C.bone, .16); ctx.lineWidth = 1; ctx.setLineDash([4, 6]); ctx.beginPath(); ctx.moveTo(bx, by); ctx.lineTo(bx + Math.cos(aimA) * 70, by + Math.sin(aimA) * 70); ctx.stroke(); ctx.setLineDash([]); }
+  } else if (w.kind === 'staff'){
+    const sx = p.x + f * 13;
+    ctx.strokeStyle = C.dust; ctx.lineWidth = 3; ctx.beginPath(); ctx.moveTo(sx, p.y - 2); ctx.lineTo(sx, p.y - 54); ctx.stroke();
+    const ready = t - p.atkT >= st.atkCd;
+    drawOrb(sx, p.y - 58, ready ? 5 : 3, st.wEl ? elCol(st.wEl) : C.frost);
+  } else if (w.kind === 'shield'){
+    const sx = p.x + f * (p.blocking ? 16 : 10), sy = p.blocking ? p.y - 46 : p.y - 34;
+    const parryOn = p.blocking && t - p.blockStart < st.parryWin;
+    ctx.fillStyle = parryOn ? C.ember : C.stoneHi; rr(sx - 5, sy, 10, p.blocking ? 40 : 26, 3); ctx.fill();
+    ctx.strokeStyle = p.blocking ? C.frost : C.rust; ctx.lineWidth = 2; rr(sx - 5, sy, 10, p.blocking ? 40 : 26, 3); ctx.stroke();
+  } else if (w.kind === 'hammer' && ae >= .3){
+    ctx.strokeStyle = C.rust; ctx.lineWidth = 4; ctx.beginPath(); ctx.moveTo(p.x + f * 6, p.y - 20); ctx.lineTo(p.x + f * 10, p.y - 56); ctx.stroke();
+    ctx.fillStyle = C.stoneHi; ctx.fillRect(p.x + f * 10 - 9, p.y - 64, 18, 12);
+  }
+  const mm = MELEE[w.kind];
+  if (mm && ae < mm.b){
+    const k = ae / mm.b, rad = w.kind === 'hammer' ? 62 : w.kind === 'dagger' ? 32 : w.kind === 'fist' ? 26 : 42;
+    const a0 = w.kind === 'hammer' ? -1.9 : -1.1, a1 = .7;
+    ctx.strokeStyle = rgba(st.wEl ? elCol(st.wEl) : C.bone, ae >= mm.a ? .95 : .4); ctx.lineWidth = ae >= mm.a ? 5 : 2;
+    ctx.beginPath();
+    if (f > 0) ctx.arc(p.x + 4, p.y - 26, rad, a0, a0 + (a1 - a0) * Math.min(1, k * 1.4));
+    else ctx.arc(p.x - 4, p.y - 26, rad, Math.PI - a0, Math.PI - a0 - (a1 - a0) * Math.min(1, k * 1.4), true);
+    ctx.stroke();
+  } else if (w.kind === 'dagger' || w.kind === 'fist'){
+    ctx.strokeStyle = C.dust; ctx.lineWidth = w.kind === 'dagger' ? 3 : 4;
+    ctx.beginPath(); ctx.moveTo(p.x + f * 8, p.y - 18); ctx.lineTo(p.x + f * (w.kind === 'dagger' ? 18 : 14), p.y - (w.kind === 'dagger' ? 10 : 18)); ctx.stroke();
+  }
+  if (p.barrier > 0 && t < p.barrierUntil){ ctx.strokeStyle = rgba(C.frost, .6 + .3 * Math.sin(t * 8)); ctx.lineWidth = 2; ctx.beginPath(); ctx.ellipse(p.x, p.y - 24, 22, 30, 0, 0, Math.PI * 2); ctx.stroke(); }
+  /* ışınlanma hedefi */
+  if (st.def.blink && S.mode === 'play' && !paused && t - p.dodgeT >= st.dodgeCd){
+    let dx = mouse.x - p.x, dy = mouse.y - (p.y - p.h / 2); const d = Math.hypot(dx, dy);
+    if (d > st.def.range){ dx *= st.def.range / d; dy *= st.def.range / d; }
+    ctx.strokeStyle = rgba(C.frost, .35); ctx.lineWidth = 1.5; ctx.beginPath(); ctx.ellipse(p.x + dx, p.y - p.h / 2 + dy + 23, 12, 4, 0, 0, Math.PI * 2); ctx.stroke();
+  }
+}
+function drawFx(){
+  for (const f of S.fx){ ctx.globalAlpha = 1 - f.age / f.life; ctx.fillStyle = f.col; ctx.fillRect(f.x - f.sz / 2, f.y - f.sz / 2, f.sz, f.sz); }
+  ctx.globalAlpha = 1;
+  ctx.textAlign = 'center';
+  for (const tx of S.texts){
+    ctx.globalAlpha = 1 - tx.age / tx.life;
+    ctx.font = `600 ${tx.size}px ${F_BODY}`; ctx.fillStyle = tx.col;
+    ctx.fillText(tx.txt, tx.x, tx.y);
+  }
+  ctx.globalAlpha = 1;
+}
+function strokeBox(b, col){ ctx.strokeStyle = col; ctx.lineWidth = 1.5; ctx.strokeRect(b.l, b.t, b.r - b.l, b.b - b.t); }
+function drawBoxes(){
+  const p = S.p, e = S.e, t = S.t;
+  strokeBox(pRect(), C.frost);
+  const mm = MELEE[p.st.wd.kind], ae = t - p.atkT;
+  if (mm && ae >= mm.a && ae <= mm.b) strokeBox(meleeBox(p), C.bone);
+  if (e && e.hp > 0){
+    strokeBox(tRect(e), C.bone);
+    if (e.state === 'lunge') strokeBox(lungeBox(e), C.blood);
+    if (e.state === 'rowStrike') for (const r of e.rows){ const [a, b] = ROW_BAND[r]; strokeBox({l:WALL, r:W - WALL, t:a, b:b}, C.blood); }
+  }
+  for (const m of S.mobs){
+    strokeBox(tRect(m), C.bone);
+    if (m.state === 'bash') strokeBox(bashBox(m), C.blood);
+    if (m.state === 'dash') strokeBox(dashBox(m), C.blood);
+  }
+  for (const w of S.quakes) strokeBox(quakeRect(w), C.blood);
+  S.traps.forEach(tr => { if (trapPhase(tr, t).st === 'up') strokeBox({l:tr.x, r:tr.x + tr.w, t:tr.y - 18, b:tr.y}, C.blood); });
+}
+function setSpacing(px){ if ('letterSpacing' in ctx) ctx.letterSpacing = px + 'px'; }
+const iconImgs = {};
+function iconImg(it){
+  let im = iconImgs[it.id];
+  if (!im){ im = new Image(); im.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(itemIconSVG(it, 64, true)); iconImgs[it.id] = im; }
+  return im;
+}
+function bar(x, y, w, h, k, col, bg){
+  ctx.fillStyle = bg || rgba(C.pit, .8); ctx.fillRect(x, y, w, h);
+  ctx.fillStyle = col; ctx.fillRect(x, y, w * clamp(k, 0, 1), h);
+}
+function drawHud(){
+  const p = S.p, e = S.e, t = S.t, st = p.st;
+  ctx.textBaseline = 'alphabetic';
+  /* oyuncu canı */
+  ctx.textAlign = 'left'; ctx.font = `600 11px ${F_MONO}`; ctx.fillStyle = C.dust;
+  ctx.fillText(`CAN ${Math.ceil(p.hp)} / ${st.maxHp}`, 40, 26);
+  bar(40, 32, 180, 9, p.hp / st.maxHp, p.hp / st.maxHp < .3 ? C.blood : C.bone);
+  ctx.strokeStyle = C.stoneHi; ctx.lineWidth = 1; ctx.strokeRect(39.5, 31.5, 181, 10);
+  ctx.fillStyle = C.dust; ctx.fillText(`${sel.c}-${sel.s} · ${S.ch.ad}`, 40, 58);
+  /* boss ya da dalga */
+  ctx.textAlign = 'center';
+  if (e){
+    setSpacing(3); ctx.font = `600 12px ${F_BODY}`; ctx.fillStyle = C.dust;
+    ctx.fillText(e.def.ad.toLocaleUpperCase('tr'), W / 2, 26);
+    setSpacing(0);
+    const bx = W / 2 - 200, by = 34, bw = 400;
+    ctx.fillStyle = rgba(C.pit, .85); ctx.fillRect(bx, by, bw, 9);
+    ctx.fillStyle = rgba(C.bone, .35); ctx.fillRect(bx, by, bw * Math.max(0, e.shown) / e.max, 9);
+    ctx.fillStyle = C.blood; ctx.fillRect(bx, by, bw * Math.max(0, e.hp) / e.max, 9);
+    ctx.strokeStyle = C.stoneHi; ctx.lineWidth = 1; ctx.strokeRect(bx - .5, by - .5, bw + 1, 10);
+    ctx.fillStyle = rgba(C.bone, .7); ctx.fillRect(bx + bw / 2 - 1, by - 3, 2, 15);
+    ctx.font = `500 11px ${F_MONO}`; ctx.fillStyle = e.phase === 2 ? C.ember : C.dust;
+    ctx.fillText(`${e.phase === 2 ? '2. AŞAMA · ' : ''}zayıflık ${e.weak ? elAd(e.weak) : 'yok'}`, W / 2, 58);
+  } else if (S.L.waves){
+    setSpacing(3); ctx.font = `600 12px ${F_BODY}`; ctx.fillStyle = C.dust;
+    ctx.fillText(`DALGA ${S.wave + 1} / ${S.L.waves.length}`, W / 2, 28);
+    setSpacing(0);
+    if (S.mode === 'play'){
+      ctx.font = `500 13px ${F_MONO}`; ctx.fillStyle = S.mobs.length ? C.bone : C.ember;
+      ctx.fillText(S.mobs.length ? `kalan düşman ${S.mobs.length}` : (S.wave < S.L.waves.length - 1 ? 'sıradaki dalga geliyor' : ''), W / 2, 46);
+    }
+  }
+  ctx.textAlign = 'right'; ctx.font = `600 12px ${F_MONO}`;
+  ctx.fillStyle = C.ember; ctx.fillText('ALTIN ' + S.gold, W - 40, 30);
+  ctx.fillStyle = C.dust; ctx.fillText('DENEME ' + (att[attKey()] || 0), W - 40, 48);
+  /* savunma ve yetenek göstergeleri */
+  const dk = clamp((t - p.dodgeT) / st.dodgeCd, 0, 1);
+  ctx.textAlign = 'left'; ctx.font = `600 11px ${F_MONO}`;
+  ctx.fillStyle = dk >= 1 ? C.frost : C.dust; ctx.fillText(st.def.blink ? 'IŞINLAN' : 'DODGE', 40, 515);
+  bar(108, 506, 90, 7, dk, dk >= 1 ? C.frost : rgba(C.frost, .45));
+  if (st.wd.kind === 'shield'){
+    ctx.fillStyle = p.blocking ? C.frost : C.dust; ctx.fillText('KALKAN', 216, 515);
+    bar(276, 506, 40, 7, p.blocking ? 1 : 0, C.frost);
+  }
+  if (st.wd.kind === 'staff' && st.atkCd > 1){
+    const ak = clamp((t - p.atkT) / st.atkCd, 0, 1);
+    ctx.fillStyle = ak >= 1 ? C.ember : C.dust; ctx.fillText(st.wd.ad.split(' ')[0].toLocaleUpperCase('tr'), 216, 515);
+    bar(296, 506, 70, 7, ak, ak >= 1 ? C.ember : rgba(C.ember, .45));
+  }
+  /* kuşanılı silahın ikonu */
+  if (st.weapon){
+    const im = iconImg(st.weapon);
+    if (im.complete && im.naturalWidth){
+      ctx.drawImage(im, W - 40 - 30, 491, 30, 30);
+      ctx.textAlign = 'right'; ctx.font = `600 11px ${F_MONO}`; ctx.fillStyle = C.dust;
+      ctx.fillText(st.weapon.ad.toLocaleUpperCase('tr'), W - 40 - 38, 511);
+    }
+  }
+  if (S.banner && S.mode === 'play'){
+    const a = S.t - S.banner.t;
+    if (a < 1.7){
+      ctx.globalAlpha = a < .2 ? a / .2 : Math.max(0, 1 - (a - 1.1) / .6);
+      ctx.textAlign = 'center'; ctx.font = `700 54px ${F_DISPLAY}`; ctx.fillStyle = C.ember;
+      ctx.fillText(S.banner.txt, W / 2, 190);
+      if (S.banner.sub){ ctx.font = `500 16px ${F_BODY}`; ctx.fillStyle = C.bone; ctx.fillText(S.banner.sub, W / 2, 218); }
+      ctx.globalAlpha = 1;
+    }
+  }
+}
+function centerLine(txt, col, font, y){ ctx.font = font; ctx.fillStyle = col; ctx.fillText(txt, W / 2, y); }
+/* bölüm sonu ekranında bulunan eşyaların ikonları */
+function drawLootLine(y, note){
+  const ids = S.loot;
+  ctx.textAlign = 'center';
+  if (!ids.length){ centerLine(`Bu sefer eşya düşmedi. ${note}`.trim(), C.dust, `500 15px ${F_BODY}`, y + 10); return; }
+  centerLine(`Bulunan eşyalar${note ? ' · ' + note : ''}`, C.dust, `500 14px ${F_BODY}`, y);
+  const n = Math.min(ids.length, 8), sz = 36, gap = 8, x0 = W / 2 - (n * sz + (n - 1) * gap) / 2;
+  for (let i = 0; i < n; i++){
+    const it = ITEM_BY_ID[ids[i]], im = iconImg(it);
+    if (im.complete && im.naturalWidth) ctx.drawImage(im, x0 + i * (sz + gap), y + 10, sz, sz);
+  }
+  if (ids.length > n) centerLine(`+${ids.length - n} eşya daha`, C.dust, `500 13px ${F_BODY}`, y + 64);
+  else if (n === 1) centerLine(ITEM_BY_ID[ids[0]].ad, ITEM_BY_ID[ids[0]].rare ? '#f2c14e' : C.bone, `600 14px ${F_BODY}`, y + 64);
+}
+/* oyun içinde düşen eşyanın ikonu yükselir */
+function drawDrops(){
+  for (const d of S.drops){
+    const a = S.t - d.t; if (a > 2.4) continue;
+    const it = ITEM_BY_ID[d.id], im = iconImg(it);
+    const y = d.y - 20 - Math.min(1, a / .4) * 34;
+    ctx.globalAlpha = a > 1.8 ? Math.max(0, 1 - (a - 1.8) / .6) : 1;
+    if (it.rare){ const g = ctx.createRadialGradient(d.x, y, 4, d.x, y, 40); g.addColorStop(0, rgba('#f2c14e', .5)); g.addColorStop(1, rgba('#f2c14e', 0)); ctx.fillStyle = g; ctx.fillRect(d.x - 40, y - 40, 80, 80); }
+    if (im.complete && im.naturalWidth) ctx.drawImage(im, d.x - 17, y - 17, 34, 34);
+    ctx.textAlign = 'center'; ctx.font = `600 13px ${F_BODY}`; ctx.fillStyle = it.rare ? '#f2c14e' : C.bone;
+    ctx.fillText((d.src ? d.src + ': ' : '') + it.ad, d.x, y + 32);
+    ctx.globalAlpha = 1;
+  }
+}
+function drawOverlay(){
+  if (S.mode === 'play' && !paused) return;
+  ctx.fillStyle = rgba(C.pit, .76); ctx.fillRect(0, 0, W, H);
+  ctx.textAlign = 'center';
+  const L = S.L, p = S.p, e = S.e, st = p.st;
+  const kindAd = L.kind === 'boss' ? 'BOSS' : L.kind === 'mini' ? 'MİNİ BOSS' : 'NORMAL BÖLÜM';
+  const sub = `${sel.c}-${sel.s}  ·  ${S.ch.ad.toLocaleUpperCase('tr')}  ·  ${kindAd}`;
+  if (S.mode === 'title'){
+    centerLine(L.boss ? BOSSES[L.boss].ad : S.ch.ad, C.bone, `700 84px ${F_DISPLAY}`, 214);
+    setSpacing(4); centerLine(sub, C.ember, `600 14px ${F_BODY}`, 254); setSpacing(0);
+    centerLine("Başlamak için tıkla ya da Enter'a bas", C.bone, `500 20px ${F_BODY}`, 314);
+    const cls = st.wd.cls ? CLASSES[st.wd.cls].ad : 'Class yok';
+    centerLine(`${cls} · ${st.weapon ? st.weapon.ad : 'Yumruk'} · can ${st.maxHp}`, C.dust, `400 16px ${F_BODY}`, 346);
+    if (st.synced) centerLine(`${st.synced} eşyan ${sel.c}. bölüm gücüne senkronlandı`, C.frost, `500 15px ${F_BODY}`, 374);
+    centerLine('Bölümü ve eşyaları sayfanın altından değiştirebilirsin', C.dust, `400 14px ${F_BODY}`, 430);
+  } else if (S.mode === 'play' && paused){
+    centerLine('Duraklatıldı', C.bone, `700 72px ${F_DISPLAY}`, 240);
+    centerLine("Devam etmek için oyun alanına tıkla ya da Esc'ye bas", C.dust, `500 18px ${F_BODY}`, 290);
+    centerLine("Ana ekrana dönmek için M'ye bas", C.dust, `500 16px ${F_BODY}`, 320);
+  } else if (S.mode === 'dead'){
+    centerLine('Öldün', C.blood, `700 96px ${F_DISPLAY}`, 220);
+    const info = e ? `${e.def.ad}: ${Math.max(0, Math.ceil(e.hp))} / ${e.max} can kaldı   ·   kaçtığın saldırı ${S.dodged}`
+                   : `Dalga ${S.wave + 1} / ${L.waves.length}   ·   altın ${S.gold}   ·   kaçtığın saldırı ${S.dodged}`;
+    centerLine(info, C.dust, `500 17px ${F_BODY}`, 270);
+    centerLine("Tekrar denemek için tıkla ya da R'ye bas", C.bone, `500 20px ${F_BODY}`, 322);
+    drawLootLine(372, 'Ölünce bir şey kaybetmezsin.');
+    centerLine('Eşyalarını değiştirmek için sayfanın altındaki envantere bak', C.dust, `400 14px ${F_BODY}`, 440);
+  } else if (S.mode === 'won'){
+    centerLine(e ? `${e.def.ad} düştü` : 'Bölüm temizlendi', C.ember, `700 76px ${F_DISPLAY}`, 220);
+    centerLine(`${att[attKey()] || 0}. denemede   ·   +${S.gold} altın   ·   kalan can ${Math.ceil(p.hp)} / ${st.maxHp}`, C.dust, `500 17px ${F_BODY}`, 270);
+    const nextOk = sel.s < 50 ? unlocked(sel.c, sel.s + 1) : sel.c < 10 && unlocked(sel.c + 1, 1);
+    const nextTxt = lobby.role === 'guest' ? "Sıradaki bölümü lobi sahibi seçer" : nextOk
+      ? (sel.s < 50 ? `Sıradaki bölüm için N'ye, tekrar için R'ye bas` : `${sel.c + 1}. bölüme geçmek için N'ye bas`)
+      : (sel.c === 10 && sel.s === 50 ? 'Oyunun sonuna geldin' : "Tekrar için R'ye bas");
+    centerLine(nextTxt, C.bone, `500 20px ${F_BODY}`, 322);
+    drawLootLine(372, S.unlockedNext ? 'Yeni bölüm açıldı.' : '');
+  }
+}
+function render(now){
+  ctx.setTransform(cv.width / W, 0, 0, cv.height / H, 0, 0);
+  ctx.save();
+  if (S.shake > 0) ctx.translate(rand(-1, 1) * S.shake, rand(-1, 1) * S.shake);
+  drawBackdrop(now);
+  drawArena();
+  drawTraps();
+  drawTelegraphs();
+  if (S.e && S.e.hp > 0) drawShadow(S.e.x, S.e.y, S.e.w);
+  for (const m of S.mobs) if (m.state !== 'spawn' && !(S.t < m.invisUntil)) drawShadow(m.x, m.y, m.w);
+  drawShadow(S.p.x, S.p.y, S.p.w);
+  drawQuakes();
+  for (const m of S.mobs) drawMob(m);
+  if (S.e && (S.e.hp > 0 || S.mode !== 'won')) drawBoss();
+  drawPartner();
+  drawPlayer(); drawShots(); drawFx(); drawDrops();
+  if (showBoxes) drawBoxes();
+  ctx.restore();
+  const fa = S.t - S.flashT;
+  if (fa < .15){ ctx.fillStyle = rgba(C.blood, .2 * (1 - fa / .15)); ctx.fillRect(0, 0, W, H); }
+  drawHud();
+  drawOverlay();
+}
+
+/* ===================== KAYIT ===================== */
+let saveTimer = 0, saving = false, dirty = false, syncState = 'ok', syncMsg = '';
+function markDirty(){
+  dirty = true;
+  if (!acct) return;
+  if (acct.offline){ store.set('prolar.offline', prof); dirty = false; return; }
+  clearTimeout(saveTimer); saveTimer = setTimeout(flushSave, 2500);
+}
+async function flushSave(){
+  if (!acct) return;
+  if (acct.offline){ store.set('prolar.offline', prof); dirty = false; return; }
+  if (!dirty || saving) return;
+  clearTimeout(saveTimer);
+  saving = true; dirty = false; syncState = 'saving'; renderAcct();
+  try { await NET.save(acct.token, prof); syncState = 'ok'; syncMsg = ''; }
+  catch (e){
+    dirty = true; syncState = 'err'; syncMsg = cleanErr(e);
+    if (/oturum/i.test(syncMsg)) flash('Oturumun kapanmış. Çıkış yapıp tekrar giriş yap, ilerlemen bu sekmede duruyor.');
+    else saveTimer = setTimeout(flushSave, 8000);
+  }
+  saving = false; renderAcct();
+}
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') flushSave(); });
+let flashTimer = 0;
+function flash(msg){ const el = $('flash'); el.textContent = msg; el.hidden = false; clearTimeout(flashTimer); flashTimer = setTimeout(() => { el.hidden = true; }, 3600); }
+function cleanErr(e){
+  const m = (e && e.message) || String(e);
+  if (/failed to fetch|networkerror|load failed|network/i.test(m)) return 'Sunucuya ulaşılamadı. Bağlantını kontrol et ya da çevrimdışı oyna.';
+  if (/function .* does not exist|could not find the function/i.test(m)) return 'Sunucu kurulumu eksik: supabase-prolar.sql henüz çalıştırılmamış.';
+  return m;
+}
+
+/* ===================== MARKET =====================
+   6 ürün. Her saat başı kendiliğinden yenilenir, altınla da yenilenebilir.
+   Ürünler açtığın en yüksek bölümden (ağırlıklı) ve öncekilerden gelir. Nadir eşyalar markette satılmaz. */
+const HOUR = 3600000;
+function hashStr(s){ let h = 2166136261; for (const ch of s){ h ^= ch.codePointAt(0); h = Math.imul(h, 16777619); } return h >>> 0; }
+function shopState(){
+  const h = Math.floor(Date.now() / HOUR);
+  if (!prof.shop || prof.shop.h !== h) prof.shop = {h, rr:0, bought:[]};
+  return prof.shop;
+}
+function shopItems(){
+  const sh = shopState();
+  const R = rng((hashStr(((acct && acct.name) || 'misafir').toLocaleLowerCase('tr')) ^ Math.imul(sh.h, 2654435761) ^ Math.imul(sh.rr + 1, 40503)) >>> 0);
+  const maxC = prof.prog.c, out = [], seen = new Set();
+  let guard = 0;
+  while (out.length < SHOP_SIZE && guard++ < 300){
+    const roll = R();
+    const c = roll < .6 ? maxC : roll < .9 ? Math.max(1, maxC - 1) : 1 + Math.floor(R() * maxC);
+    const pool = ITEMS.filter(i => i.tier === c && !i.rare);
+    const it = pool[Math.floor(R() * pool.length)];
+    if (!it || seen.has(it.id)) continue;
+    seen.add(it.id); out.push(it);
+  }
+  return out;
+}
+function renderMarket(){
+  const el = $('mk-items'); if (!el) return;
+  const sh = shopState(), items = shopItems();
+  el.innerHTML = items.map((it, i) => itemCard(it, 'shop', {i, price:PRICE(it), bought:!!sh.bought[i]})).join('');
+  const cost = REROLL_COST(prof.prog.c), rb = $('mk-reroll');
+  rb.textContent = `Ürünleri şimdi yenile · ${cost} altın`; rb.disabled = prof.gold < cost || runLocked();
+  $('mk-gold').textContent = prof.gold;
+  updateShopTimer();
+}
+function updateShopTimer(){
+  const left = HOUR - (Date.now() % HOUR), m = Math.max(1, Math.ceil(left / 60000));
+  $('mk-timer').textContent = `${m} dk`;
+  if (prof.shop && prof.shop.h !== Math.floor(Date.now() / HOUR)) renderMarket();
+}
+setInterval(() => { if (acct) updateShopTimer(); }, 20000);
+$('mk-items').addEventListener('click', ev => {
+  const b = ev.target.closest('[data-buy]'); if (!b || runLocked()) return;
+  const i = +b.dataset.buy, it = shopItems()[i], sh = shopState(), price = PRICE(it);
+  if (!it || sh.bought[i] || prof.gold < price) return;
+  prof.gold -= price; prof.inv[it.id] = (prof.inv[it.id] || 0) + 1; sh.bought[i] = true;
+  markDirty(); flash(`${it.ad} alındı.`); renderMarket(); renderBag(); renderAcct();
+});
+$('mk-reroll').addEventListener('click', () => {
+  if (runLocked()) return;
+  const cost = REROLL_COST(prof.prog.c); if (prof.gold < cost) return;
+  const sh = shopState(); prof.gold -= cost; sh.rr++; sh.bought = [];
+  markDirty(); renderMarket(); renderAcct();
+});
+
+/* ===================== HESAP ===================== */
+function renderAcct(){
+  const on = !!acct;
+  $('auth').hidden = on; $('app').hidden = !on;
+  if (!on) return;
+  $('ab-name').textContent = acct.name + (acct.offline ? ' · çevrimdışı' : '');
+  $('ab-gold').textContent = prof.gold;
+  $('ab-prog').textContent = `${prof.prog.c}-${prof.prog.s}`;
+  const sy = $('ab-sync');
+  sy.textContent = acct.offline ? 'İlerleme bu tarayıcıda kaydediliyor' : syncState === 'saving' ? 'Kaydediliyor…' : syncState === 'err' ? `Kaydedilemedi: ${syncMsg}` : 'Kaydedildi';
+  sy.classList.toggle('err', syncState === 'err' && !acct.offline);
+  $('ab-admin-wrap').hidden = !acct.admin;
+  $('ab-admin').checked = adminView;
+  $('b-pass').hidden = acct.offline;
+  const mg = $('mk-gold'); if (mg) mg.textContent = prof.gold;
+}
+async function doAuth(kind){
+  const name = $('a-name').value.trim(), pass = $('a-pass').value, msg = $('auth-msg');
+  if (!NET.available()){ msg.textContent = 'Sunucuya bağlanılamıyor. Çevrimdışı oynayabilirsin.'; return; }
+  if (!name || !pass){ msg.textContent = 'Kullanıcı adı ve şifre yaz.'; return; }
+  msg.textContent = kind === 'register' ? 'Hesap açılıyor…' : 'Giriş yapılıyor…';
+  try {
+    const r = kind === 'register' ? await NET.register(name, pass) : await NET.login(name, pass);
+    store.set('prolar.token', r.token);
+    $('a-pass').value = ''; msg.textContent = '';
+    loggedIn(r, false);
+  } catch (e){ msg.textContent = cleanErr(e); }
+}
+function loggedIn(r, offline){
+  /* admin hesabı: her şey açık gelir. Çevrimdışı mod sadece bu tarayıcıda kaldığı için orada da test görünümü açılabilir. */
+  acct = {token:r.token || null, id:r.id || null, name:r.name, admin:!!r.is_admin || offline, offline};
+  adminView = !!r.is_admin; syncState = 'ok'; syncMsg = '';
+  setProfile(r.save);
+  if (!unlocked(sel.c, sel.s)) sel = {c:prof.prog.c, s:prof.prog.s};
+  fTier = adminView ? sel.c : 'all';
+  S = makeState('title'); paused = false;
+  syncUI(); renderBag(); renderMarket(); renderLobby();
+}
+$('auth-form').addEventListener('submit', ev => { ev.preventDefault(); doAuth('login'); });
+$('b-register').addEventListener('click', () => doAuth('register'));
+$('b-offline').addEventListener('click', () => loggedIn({name:'Misafir', save:store.get('prolar.offline', null)}, true));
+$('b-logout').addEventListener('click', async () => {
+  if (runLocked()) return;
+  await flushSave(); lobbyLeave();
+  if (acct && !acct.offline && acct.token){ try { await NET.logout(acct.token); } catch (_) {} }
+  store.set('prolar.token', null); acct = null; adminView = false; setProfile(null);
+  S = makeState('title'); renderAcct();
+});
+$('ab-admin').addEventListener('change', ev => {
+  if (!acct || !acct.admin || runLocked()){ ev.target.checked = adminView; return; }
+  adminView = ev.target.checked;
+  if (!adminView){
+    for (const sl of SLOTS) if (equip[sl] && !(prof.inv[equip[sl]] > 0)) delete equip[sl];
+    if (!unlocked(sel.c, sel.s)) sel = {c:prof.prog.c, s:prof.prog.s};
+  }
+  fTier = adminView ? sel.c : 'all';
+  onGearChange(); renderMarket();
+});
+$('b-pass').addEventListener('click', () => { const f = $('pass-form'); f.hidden = !f.hidden; $('pass-msg').textContent = ''; });
+$('pass-form').addEventListener('submit', async ev => {
+  ev.preventDefault(); const m = $('pass-msg');
+  try { await NET.changePass(acct.token, $('p-old').value, $('p-new').value); m.textContent = 'Şifren değişti.'; $('p-old').value = ''; $('p-new').value = ''; }
+  catch (e){ m.textContent = cleanErr(e); }
+});
+async function boot(){
+  renderAcct();
+  const msg = $('auth-msg');
+  if (!NET.available()){ msg.textContent = 'Sunucuya bağlanılamıyor. Çevrimdışı oynayabilirsin, ilerlemen bu tarayıcıda kalır.'; return; }
+  const tok = store.get('prolar.token', null);
+  if (!tok) return;
+  msg.textContent = 'Oturum açılıyor…';
+  try { const r = await NET.me(tok); msg.textContent = ''; loggedIn(Object.assign({token:tok}, r), false); }
+  catch (e){ msg.textContent = /oturum/i.test(e.message || '') ? 'Oturumun kapanmış, tekrar giriş yap.' : cleanErr(e); }
+}
+
+/* ===================== ONLINE LOBİ (hazırlık) =====================
+   Lobi sahibi 5 haneli bir kod alır, arkadaşı o kodla katılır. En fazla 2 kişi.
+   Bölümü lobi sahibi seçer, ilerleme onun hesabına yazılır. Misafir altın ve eşya kazanır.
+   Şimdilik oyuncular birbirinin hareketini ve canını görür. Düşmanlar henüz her ekranda ayrı hesaplanıyor. */
+const PARTNER_COL = '#9fd8c8';
+/* lobi kodu: 5 haneli rakam. Lobi hiçbir yere kaydedilmez, herkes çıkınca kendiliğinden kapanır. */
+function lobbyCode(){ return String(10000 + Math.floor(Math.random() * 90000)); }
+function myPresence(){
+  const st = derive(sel.c);
+  return {nick:acct.name, role:lobby.role, ready:lobby.ready, cls:st.wd.cls || null, wpn:st.weapon ? st.weapon.ad : 'Yumruk', prog:prof.prog, at:lobby.joinedAt};
+}
+function lobbySend(ev, payload){ if (lobby.ch && lobby.subscribed){ try { lobby.ch.send({type:'broadcast', event:ev, payload}); } catch (_) {} } }
+function lobbyJoin(code, role){
+  if (!acct || acct.offline){ lobby.msg = 'Online lobi için hesabınla giriş yapman gerekiyor.'; renderLobby(); return; }
+  if (!NET.available()){ lobby.msg = 'Sunucuya bağlanılamıyor.'; renderLobby(); return; }
+  code = String(code || '').replace(/\D/g, '').slice(0, 5);
+  if (code.length !== 5){ lobby.msg = 'Lobi kodu 5 haneli bir sayı olmalı.'; renderLobby(); return; }
+  lobbyLeave(true);
+  const ch = NET.channel('prolar-lobi-' + code, {config:{broadcast:{self:false}, presence:{key:acct.name}}});
+  if (!ch){ lobby.msg = 'Sunucuya bağlanılamıyor.'; renderLobby(); return; }
+  Object.assign(lobby, {ch, code, role, peers:[], partner:null, ping:null, ready:false, pstate:null, msg:'Bağlanıyor…', joinedAt:Date.now(), subscribed:false});
+  ch.on('presence', {event:'sync'}, onPresence);
+  ch.on('broadcast', {event:'lvl'}, ({payload}) => { if (lobby.role === 'guest' && payload && S.mode !== 'play') selectLevel(payload.c, payload.s, true); });
+  ch.on('broadcast', {event:'start'}, ({payload}) => {
+    if (lobby.role !== 'guest' || !payload || S.mode === 'play') return;
+    selectLevel(payload.c, payload.s, true); newRun();
+  });
+  ch.on('broadcast', {event:'p'}, ({payload}) => { lobby.pstate = Object.assign({}, payload, {rx:performance.now()}); });
+  ch.on('broadcast', {event:'ping'}, ({payload}) => lobbySend('pong', payload));
+  ch.on('broadcast', {event:'pong'}, ({payload}) => { if (payload && payload.from === acct.name) lobby.ping = Math.round(performance.now() - payload.t); });
+  ch.subscribe(async status => {
+    if (lobby.ch !== ch) return;
+    if (status === 'SUBSCRIBED'){
+      lobby.subscribed = true; lobby.msg = '';
+      try { await ch.track(myPresence()); } catch (_) {}
+      if (lobby.role === 'host') lobbySend('lvl', sel);
+      renderLobby(); renderSubs();
+    } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT'){
+      lobby.msg = 'Bağlantı kurulamadı. Biraz sonra tekrar dene.'; renderLobby();
+    }
+  });
+  renderLobby(); renderSubs();
+}
+function onPresence(){
+  const ch = lobby.ch; if (!ch) return;
+  const peers = Object.values(ch.presenceState()).map(arr => arr[arr.length - 1]).filter(Boolean);
+  lobby.peers = peers;
+  if (peers.length > 2){
+    const late = peers.slice().sort((a, b) => a.at - b.at).slice(2);
+    if (late.some(p => p.nick === acct.name)){ lobbyLeave(true); lobby.msg = 'Lobi dolu. Bir lobide en fazla 2 kişi olabilir.'; renderLobby(); return; }
+  }
+  lobby.partner = peers.find(p => p.nick !== acct.name) || null;
+  if (lobby.role === 'guest' && lobby.partner && lobby.partner.role !== 'host') lobby.msg = 'Bu lobide lobi sahibi yok.';
+  renderLobby();
+}
+function lobbyLeave(silent){
+  if (lobby.ch){ const ch = lobby.ch; lobby.ch = null; try { ch.untrack(); ch.unsubscribe(); NET.removeChannel(ch); } catch (_) {} }
+  Object.assign(lobby, {ch:null, code:null, role:null, peers:[], partner:null, ping:null, ready:false, pstate:null, subscribed:false});
+  if (!silent) lobby.msg = '';
+  renderLobby(); renderSubs();
+}
+async function lobbyTrack(){ if (lobby.ch && lobby.subscribed){ try { await lobby.ch.track(myPresence()); } catch (_) {} } }
+function renderLobby(){
+  const inL = !!lobby.ch;
+  $('lobby-out').hidden = inL; $('lobby-in').hidden = !inL;
+  $('lobby-msg').textContent = lobby.msg || '';
+  if (!inL) return;
+  $('lb-code').textContent = lobby.code;
+  $('lb-role').textContent = lobby.role === 'host'
+    ? 'Lobi sahibi sensin. Bölümü sen seçersin, ilerleme senin hesabına yazılır.'
+    : 'Misafirsin. Bölümü lobi sahibi seçer. Sen altın ve eşya kazanırsın, ilerleme onun hesabına yazılır.';
+  const pt = lobby.partner;
+  $('lb-partner').innerHTML = pt
+    ? `<b>${esc(pt.nick)}</b> · ${pt.cls ? CLASSES[pt.cls].ad : 'Class yok'} · ${esc(pt.wpn)} · ilerleme ${pt.prog ? pt.prog.c + '-' + pt.prog.s : '?'} · ${pt.ready ? '<span class="okc">hazır</span>' : '<span class="dim">hazır değil</span>'}`
+    : '<span class="dim">Arkadaşının katılması bekleniyor. Kodu ona gönder.</span>';
+  $('lb-ping').textContent = lobby.ping != null ? `ping ${lobby.ping} ms` : (pt ? 'ping ölçülüyor…' : '');
+  const rb = $('lb-ready'); rb.textContent = lobby.ready ? 'Hazır değilim' : 'Hazırım'; rb.setAttribute('aria-pressed', String(lobby.ready));
+  const sb = $('lb-start'); sb.hidden = lobby.role !== 'host'; sb.disabled = !(pt && pt.ready && lobby.ready) || runLocked();
+  $('lb-sel').textContent = `${sel.c}-${sel.s} · ${CHAPTERS[sel.c - 1].ad}`;
+}
+$('lb-create').addEventListener('click', () => lobbyJoin(lobbyCode(), 'host'));
+$('lb-join-form').addEventListener('submit', ev => { ev.preventDefault(); lobbyJoin($('lb-join-code').value, 'guest'); });
+$('lb-leave').addEventListener('click', () => lobbyLeave());
+$('lb-ready').addEventListener('click', () => { lobby.ready = !lobby.ready; lobbyTrack(); renderLobby(); });
+$('lb-start').addEventListener('click', () => {
+  if (lobby.role !== 'host' || !lobby.partner || !lobby.partner.ready || !lobby.ready || runLocked()) return;
+  lobbySend('start', {c:sel.c, s:sel.s}); newRun();
+});
+$('lb-copy').addEventListener('click', () => {
+  const done = () => flash('Kod kopyalandı.');
+  try { navigator.clipboard.writeText(lobby.code).then(done, () => flash(`Kod: ${lobby.code}`)); } catch (_) { flash(`Kod: ${lobby.code}`); }
+});
+function lobbyTick(now){
+  if (!lobby.ch || !lobby.subscribed) return;
+  if (now - (lobby.pingT || 0) > 2000){ lobby.pingT = now; lobbySend('ping', {t:now, from:acct.name}); renderLobby(); }
+  if (S.mode === 'play' && !paused && now - lobby.sendT > 50){
+    lobby.sendT = now;
+    const p = S.p;
+    lobbySend('p', {x:Math.round(p.x), y:Math.round(p.y), vx:Math.round(p.vx), vy:Math.round(p.vy), f:p.face, hp:Math.ceil(p.hp), mx:p.st.maxHp,
+      b:p.blocking ? 1 : 0, d:S.t < p.dodgeUntil ? 1 : 0, a:S.t - p.atkT < .17 ? 1 : 0, lv:attKey(), n:acct.name});
+  }
+}
+function drawPartner(){
+  const ps = lobby.pstate; if (!ps || !lobby.ch || S.mode === 'title') return;
+  const age = (performance.now() - ps.rx) / 1000;
+  if (age > 1.5 || ps.lv !== attKey()) return;
+  const k = Math.min(age, .1), x = ps.x + ps.vx * k, y = Math.min(FLOOR, ps.y + ps.vy * k);
+  ctx.globalAlpha = .78;
+  drawBodyShape(x, y, ps.d ? C.frost : PARTNER_COL);
+  ctx.globalAlpha = 1;
+  ctx.fillStyle = C.pit; ctx.fillRect(x + ps.f * 3 - 1.5, y - 40, 3, 3);
+  if (ps.b){ ctx.fillStyle = C.stoneHi; rr(x + ps.f * 16 - 5, y - 46, 10, 40, 3); ctx.fill(); }
+  if (ps.a){
+    ctx.strokeStyle = rgba(C.bone, .8); ctx.lineWidth = 4; ctx.beginPath();
+    if (ps.f > 0) ctx.arc(x + 4, y - 26, 40, -1.1, .7); else ctx.arc(x - 4, y - 26, 40, Math.PI + 1.1, Math.PI - .7, true);
+    ctx.stroke();
+  }
+  ctx.textAlign = 'center'; ctx.font = `600 12px ${F_BODY}`; ctx.fillStyle = PARTNER_COL;
+  ctx.fillText(ps.n || 'Arkadaş', x, y - 60);
+  bar(x - 18, y - 56, 36, 4, ps.hp / Math.max(1, ps.mx), PARTNER_COL);
+}
+
+/* ---------- döngü ---------- */
+function resize(){
+  const r = cv.getBoundingClientRect();
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const w = Math.max(1, Math.round(r.width * dpr)), h = Math.max(1, Math.round(r.height * dpr));
+  if (cv.width !== w || cv.height !== h){ cv.width = w; cv.height = h; }
+}
+if (window.ResizeObserver) new ResizeObserver(resize).observe(cv); else window.addEventListener('resize', resize);
+resize();
+MAP.KeyN = 'next';
+function handleMeta(){
+  if (pressed.has('menu')){ pressed.delete('menu'); if (S.mode !== 'play' || paused) toMenu(); }
+  if (pressed.has('next')){
+    pressed.delete('next');
+    if (S.mode === 'won'){ if (sel.s < 50) selectLevel(sel.c, sel.s + 1); else if (sel.c < 10) selectLevel(sel.c + 1, 1); }
+  }
+  if (pressed.has('pause')){ pressed.delete('pause'); if (S.mode === 'play') paused = !paused; }
+  if (pressed.has('restart')){ pressed.delete('restart'); newRun(); return; }
+  if (pressed.has('confirm')){ pressed.delete('confirm'); if (S.mode !== 'play') newRun(); else if (paused) paused = false; }
+}
+let last = performance.now(), acc = 0;
+function frame(now){
+  let dt = (now - last) / 1000; last = now; if (dt > .1) dt = .1;
+  handleMeta();
+  if (S.mode === 'play' && !paused){
+    acc += dt;
+    while (acc >= STEP && S.mode === 'play'){ if (step(STEP)) pressed.clear(); acc -= STEP; }
+  } else { acc = 0; pressed.clear(); }
+  if (S.shake > 0) S.shake = Math.max(0, S.shake - dt * 30);
+  if (S.e) S.e.shown += (S.e.hp - S.e.shown) * Math.min(1, dt * 4);
+  lobbyTick(now);
+  render(now);
+  requestAnimationFrame(frame);
+}
+syncUI(); renderBag(); renderLog(); renderMarket(); renderLobby();
+requestAnimationFrame(frame);
+boot();
+})();

@@ -1,0 +1,436 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#18141f">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Prolar">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<script>if ("serviceWorker" in navigator && location.protocol === "https:") addEventListener("load", () => navigator.serviceWorker.register("sw.js").catch(() => {}));</script>
+<title>Prolar</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Grenze+Gotisch:wght@600;700&family=Barlow:wght@400;500;600&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+/* Layout: a level map strip on top, the arena as the stage, then the character bench (gear + bag), then a low shelf of controls, tuning and the boss timing log */
+:root{
+  --night:#18141f;
+  --pit:#0f0c15;
+  --stone:#2d2638;
+  --stone-hi:#463b54;
+  --bone:#ece4d2;
+  --dust:#a098aa;
+  --ember:#eaa23c;
+  --blood:#d9493f;
+  --frost:#86c9dd;
+  --rust:#70392f;
+  --display:"Grenze Gotisch", Georgia, "Times New Roman", serif;
+  --body:"Barlow", "Segoe UI", system-ui, sans-serif;
+  --mono:"JetBrains Mono", ui-monospace, Menlo, Consolas, monospace;
+  color-scheme: dark;
+}
+html,body{background:var(--night);color:var(--bone)}
+body{
+  font-family:var(--body);font-size:15px;line-height:1.5;
+  padding-left:max(16px, env(safe-area-inset-left, 0px));
+  padding-right:max(16px, env(safe-area-inset-right, 0px));
+  padding-block:20px 48px;
+}
+.wrap{max-width:1120px;margin:0 auto;display:flex;flex-direction:column;gap:18px}
+header{display:flex;align-items:flex-end;justify-content:space-between;gap:8px 24px;flex-wrap:wrap}
+.brand{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap}
+h1{font-family:var(--display);font-weight:700;font-size:clamp(36px,6vw,54px);line-height:.9;margin:0;letter-spacing:.01em}
+.tag{font-family:var(--mono);font-size:12px;letter-spacing:.1em;text-transform:uppercase;color:var(--ember)}
+.sub{margin:0;color:var(--dust);max-width:58ch}
+h2{font-family:var(--body);font-size:12px;letter-spacing:.16em;text-transform:uppercase;color:var(--dust);font-weight:600;margin:0 0 12px;padding-bottom:8px;border-bottom:1px solid var(--stone)}
+section{min-width:0}
+:focus-visible{outline:2px solid var(--ember);outline-offset:2px}
+button{font:inherit;font-size:14px;font-weight:600;color:var(--bone);background:var(--stone);border:1px solid var(--stone-hi);border-radius:5px;padding:5px 12px;cursor:pointer}
+button:hover:not(:disabled){background:var(--stone-hi)}
+button:disabled{opacity:.45;cursor:not-allowed}
+select{font:inherit;font-size:14px;color:var(--bone);background:var(--stone);border:1px solid var(--stone-hi);border-radius:5px;padding:5px 8px;min-width:0;max-width:100%}
+
+/* bölüm haritası */
+.chapters{display:flex;gap:6px;overflow-x:auto;padding-bottom:6px;scrollbar-width:thin}
+.chap{display:flex;align-items:baseline;gap:8px;white-space:nowrap;padding:6px 12px}
+.chap span{font-family:var(--mono);font-size:12px;color:var(--dust)}
+.chap[aria-pressed="true"]{border-color:var(--ember);background:var(--stone-hi)}
+.chap[aria-pressed="true"] span{color:var(--ember)}
+.subs{display:grid;grid-template-columns:repeat(auto-fill,minmax(50px,1fr));gap:4px;margin-top:10px}
+.sub{font-family:var(--mono);font-size:12px;font-weight:400;padding:4px 0;text-align:center;font-variant-numeric:tabular-nums}
+.sub.mini{color:var(--frost);border-color:color-mix(in srgb, var(--frost) 50%, var(--stone-hi))}
+.sub.boss{color:var(--ember);border-color:color-mix(in srgb, var(--ember) 55%, var(--stone-hi));font-weight:600}
+.sub[aria-pressed="true"]{background:var(--bone);color:var(--pit);border-color:var(--bone)}
+.lvinfo{margin:12px 0 0;color:var(--bone);max-width:110ch}
+.lvtag{font-family:var(--mono);font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:var(--ember);margin-right:6px}
+.dim{color:var(--dust)}
+
+.stage{position:relative;width:100%;max-width:100%;aspect-ratio:16/9;background:var(--pit);border:1px solid var(--stone);border-radius:6px;overflow:hidden}
+canvas{display:block;width:100%;height:100%;outline:none;cursor:crosshair;touch-action:none}
+canvas:focus-visible{box-shadow:inset 0 0 0 2px var(--ember)}
+
+/* karakter tezgâhı */
+.bench{display:grid;grid-template-columns:minmax(0,.9fr) minmax(0,1.4fr);gap:28px}
+@media (max-width:920px){.bench{grid-template-columns:minmax(0,1fr)}}
+.locknote{margin:0 0 12px;padding:8px 12px;border:1px solid var(--stone-hi);border-radius:5px;color:var(--frost);background:color-mix(in srgb, var(--stone) 60%, transparent)}
+.locked{opacity:.45}
+.slots{list-style:none;margin:0;padding:0;display:grid;gap:0}
+.slots li{display:grid;grid-template-columns:76px 30px minmax(0,1fr) auto;gap:10px;align-items:center;padding:6px 0;border-top:1px solid var(--stone)}
+.sic{display:block;width:30px;height:30px}
+.sic svg{display:block}
+.empty-ic{border:1px dashed var(--stone-hi);border-radius:6px}
+.slots li:first-child{border-top:0}
+.slots .sl{font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--dust)}
+.slots .nm{min-width:0}
+.slots em{font-style:normal;font-family:var(--mono);font-size:11px;color:var(--dust);margin-left:4px}
+.slots em.sync{color:var(--frost)}
+.slots .empty{color:var(--dust);font-style:italic}
+.slots .x{font-size:12px;padding:2px 8px}
+.stats{margin-top:16px}
+.stats dl{display:grid;grid-template-columns:auto minmax(0,1fr);gap:6px 14px;margin:0}
+.stats dt{color:var(--dust);font-size:13px}
+.stats dd{margin:0}
+.chip{display:inline-block;font-style:normal;font-family:var(--mono);font-size:11px;line-height:1.5;padding:0 6px;border-radius:3px;margin:0 3px;color:var(--pit);background:var(--c)}
+.set{margin:12px 0 0;color:var(--dust);font-size:14px}
+.set .ok{color:var(--ember)}
+.syncnote{margin:8px 0 0;color:var(--frost);font-size:14px}
+.filters{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.quick{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:10px;color:var(--dust);font-size:13px}
+.items{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:6px;margin-top:12px;max-height:560px;overflow-y:auto;padding-right:4px}
+.item{display:grid;grid-template-columns:44px minmax(0,1fr);gap:10px;align-items:start;text-align:left;font-weight:400;padding:8px 10px;min-width:0}
+.item .ic svg{display:block}
+.item .tx{display:flex;flex-direction:column;gap:1px;min-width:0}
+.item b{font-weight:600}
+.item .meta{font-family:var(--mono);font-size:11px;color:var(--dust)}
+.item .nums{font-size:13px}
+.tags{display:flex;flex-wrap:wrap;gap:4px;margin-top:5px}
+.tg{display:inline-flex;align-items:center;gap:4px;font-size:11.5px;font-weight:600;line-height:1.5;padding:0 7px 0 5px;border-radius:999px;border:1px solid currentColor;white-space:nowrap}
+.tg svg{flex:none}
+.tg-off{color:var(--ember)}
+.tg-def{color:var(--frost)}
+.tg-util{color:var(--dust)}
+.tg-weak{color:var(--blood)}
+.tg-el{color:var(--c)}
+.stats dd.tags{margin:0}
+.item.on{border-color:var(--ember);background:var(--stone-hi)}
+.item.on b::after{content:" · kuşanılı";font-weight:400;font-size:12px;color:var(--ember)}
+.more{grid-column:1/-1;color:var(--dust);margin:6px 0}
+
+/* hesap */
+.small{font-size:13px}
+input{font:inherit;font-size:15px;color:var(--bone);background:var(--pit);border:1px solid var(--stone-hi);border-radius:5px;padding:7px 10px;min-width:0;max-width:100%}
+input:focus-visible{outline:2px solid var(--ember);outline-offset:1px}
+button.primary{background:var(--ember);color:var(--pit);border-color:var(--ember)}
+button.primary:hover:not(:disabled){background:color-mix(in srgb, var(--ember) 85%, var(--bone))}
+button.ghost{background:transparent}
+.auth{max-width:460px}
+.authform{display:grid;gap:6px}
+.authform label{font-size:13px;color:var(--dust);margin-top:6px}
+.authbtns{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
+.authmsg{min-height:1.5em;margin:8px 0 0;color:var(--ember)}
+.app{display:flex;flex-direction:column;gap:18px}
+.acctbar{display:flex;flex-wrap:wrap;align-items:center;gap:8px 18px;padding:10px 14px;border:1px solid var(--stone);border-radius:6px;background:color-mix(in srgb, var(--stone) 45%, transparent)}
+.acctbar .who b{font-size:17px}
+.kv{color:var(--dust);font-size:13px}
+.kv b{color:var(--bone);font-family:var(--mono);font-size:14px;margin-left:4px;font-variant-numeric:tabular-nums}
+.kv b.gold, b.gold{color:var(--ember)}
+.sync{font-size:13px;color:var(--dust)}
+.sync.err{color:var(--blood)}
+.spacer{flex:1 1 auto}
+.passform{flex-basis:100%;display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.passform label{font-size:13px;color:var(--dust)}
+.flash{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(18px + env(safe-area-inset-bottom, 0px));max-width:calc(100% - 32px);background:var(--bone);color:var(--pit);font-weight:600;padding:9px 16px;border-radius:6px;box-shadow:0 6px 24px rgba(0,0,0,.4);z-index:20}
+/* lobi */
+.lbrow{display:flex;flex-wrap:wrap;align-items:center;gap:8px 14px}
+.lbjoin{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.lbjoin input{width:6.5em;font-family:var(--mono);text-transform:uppercase;letter-spacing:.2em}
+.code{font-size:18px !important;letter-spacing:.2em;color:var(--ember) !important}
+.lbline{margin:8px 0 0}
+.lbline.warn{color:var(--ember);min-height:0}
+.lbline.warn:empty{display:none}
+#lb-ready[aria-pressed="true"]{border-color:var(--frost);color:var(--frost)}
+.okc{color:#8fd88a;font-weight:600}
+/* bölüm haritası ekleri */
+.sub.done::after{content:"✓";margin-left:2px;color:#8fd88a;font-size:10px}
+.sub:disabled{opacity:.35}
+.lk{display:inline-block;width:7px;height:7px;border:1.5px solid currentColor;border-radius:2px;margin-right:3px;vertical-align:1px}
+.loot{display:inline-block;margin-top:6px;font-size:14px;color:var(--frost)}
+/* envanter ve market ekleri */
+.bagbar{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-top:10px}
+.bagbtns{display:flex;gap:6px;flex-wrap:wrap}
+#b-sellcls[data-arm]{border-color:var(--blood);color:var(--blood)}
+.item{background:var(--stone);border:1px solid var(--stone-hi);border-radius:5px;color:var(--bone)}
+.item .ic{position:relative}
+.cnt{position:absolute;right:-4px;bottom:-4px;font-style:normal;font-family:var(--mono);font-size:11px;font-weight:600;background:var(--ember);color:var(--pit);border-radius:8px;padding:0 5px;line-height:1.5}
+.rare{font-size:12px;font-weight:600;color:#f2c14e}
+.acts{display:flex;gap:6px;flex-wrap:wrap;margin-top:7px}
+.acts button{font-size:12px;padding:3px 10px}
+.mkbar{display:flex;flex-wrap:wrap;align-items:center;gap:8px 18px;margin-bottom:6px}
+.market .items{max-height:none}
+.shelf{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.1fr) minmax(0,1.3fr);gap:28px}
+@media (max-width:920px){.shelf{grid-template-columns:minmax(0,1fr)}}
+.keys{display:grid;grid-template-columns:auto minmax(0,1fr);gap:8px 14px;margin:0;align-items:baseline}
+.keys dt{display:flex;gap:4px;flex-wrap:wrap}
+.keys dd{margin:0}
+kbd{font-family:var(--mono);font-size:12px;padding:1px 6px;border:1px solid var(--stone-hi);border-bottom-width:2px;border-radius:4px;background:var(--stone);color:var(--bone);white-space:nowrap}
+details{margin-top:16px}
+details + details{margin-top:10px}
+summary{cursor:pointer;color:var(--ember);font-weight:600}
+details ul{margin:10px 0 0;padding-left:18px;display:grid;gap:6px}
+details li span{color:var(--dust)}
+details li b{font-weight:600}
+.elites{list-style:none;padding-left:0}
+.elites li{display:grid;grid-template-columns:14px minmax(0,1fr);gap:8px;align-items:baseline}
+.elites li:last-child{display:block;color:var(--dust)}
+.sw{display:inline-block;width:12px;height:12px;border-radius:3px;background:var(--c);transform:translateY(1px)}
+.sw-ghost{background:transparent;border:1.5px dashed #c9b8ff}
+.sliders{display:grid;gap:16px}
+.slider{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:2px 10px;align-items:baseline}
+.slider label{font-weight:600}
+.slider output{font-family:var(--mono);font-size:13px;color:var(--ember);font-variant-numeric:tabular-nums}
+.slider input{grid-column:1/-1;width:100%;accent-color:var(--ember);margin:4px 0 0}
+.slider small{grid-column:1/-1;color:var(--dust);font-size:13px;line-height:1.4}
+.row{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-top:18px}
+.check{display:flex;gap:8px;align-items:center;cursor:pointer}
+.check input{accent-color:var(--ember);width:16px;height:16px}
+.note{margin:0 0 12px;color:var(--dust);font-size:14px;line-height:1.45}
+.note b{color:var(--bone);font-family:var(--mono);font-weight:600;font-size:13px}
+.tablewrap{overflow-x:auto}
+table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}
+th{text-align:left;font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--dust);font-weight:600;padding:0 10px 6px 0;white-space:nowrap}
+td{padding:7px 10px 7px 0;border-top:1px solid var(--stone);font-family:var(--mono);font-size:13px;white-space:nowrap;vertical-align:baseline}
+td:last-child{font-family:var(--body);font-size:14px;font-weight:600;white-space:normal;padding-right:0}
+td .d{display:block;font-family:var(--mono);font-weight:400;font-size:12px;color:var(--dust)}
+.r-ember{color:var(--ember)}.r-frost{color:var(--frost)}.r-blood{color:var(--blood)}.r-dust{color:var(--dust)}
+.hang{font-family:var(--body);font-size:11px;font-weight:600;color:var(--ember);border:1px solid var(--ember);border-radius:3px;padding:0 4px;margin-left:6px}
+tr.empty td{font-family:var(--body);font-weight:400;color:var(--dust);white-space:normal}
+.att{display:flex;align-items:center;gap:10px;margin-top:16px;color:var(--dust);flex-wrap:wrap}
+.att b{font-family:var(--mono);color:var(--bone);font-variant-numeric:tabular-nums}
+</style>
+</head>
+<body>
+
+<div class="wrap">
+  <header>
+    <div class="brand">
+      <h1>Prolar</h1>
+      <span class="tag">Prototip 4</span>
+    </div>
+    <p class="sub">10 bölüm, her birinde 50 alt bölüm. Her 25. alt bölümde mini boss, 50.'de boss var. Herkes çıplak başlar, eşyalar savaşarak ve marketten gelir.</p>
+  </header>
+
+  <section class="auth" id="auth" aria-labelledby="h-auth">
+    <h2 id="h-auth">Hesap</h2>
+    <form id="auth-form" class="authform" autocomplete="on">
+      <label for="a-name">Kullanıcı adı</label>
+      <input id="a-name" name="username" autocomplete="username" maxlength="16" required placeholder="3-16 harf, rakam ya da _">
+      <label for="a-pass">Şifre</label>
+      <input id="a-pass" name="password" type="password" autocomplete="current-password" maxlength="72" required placeholder="En az 4 karakter">
+      <div class="authbtns">
+        <button type="submit" id="b-login" class="primary">Giriş yap</button>
+        <button type="button" id="b-register">Hesap aç</button>
+        <button type="button" id="b-offline" class="ghost">Çevrimdışı oyna</button>
+      </div>
+      <p class="authmsg" id="auth-msg" role="status"></p>
+      <p class="dim small">Şifren sunucuda geri çevrilemez biçimde saklanır. Aynı hesaba telefondan ve bilgisayardan girebilirsin. Çevrimdışı oynarsan ilerleme sadece bu tarayıcıda kalır ve online lobiye giremezsin.</p>
+    </form>
+  </section>
+
+  <div id="app" class="app" hidden>
+  <div class="acctbar" id="acct-bar">
+    <span class="who"><b id="ab-name"></b></span>
+    <span class="kv">Altın <b id="ab-gold" class="gold">0</b></span>
+    <span class="kv">İlerleme <b id="ab-prog">1-1</b></span>
+    <span class="sync" id="ab-sync" role="status"></span>
+    <span class="spacer"></span>
+    <label class="check" id="ab-admin-wrap" for="ab-admin" hidden><input type="checkbox" id="ab-admin"> Admin görünümü</label>
+    <button type="button" id="b-pass" class="ghost">Şifre değiştir</button>
+    <button type="button" id="b-logout" class="ghost">Çıkış</button>
+    <form id="pass-form" class="passform" hidden>
+      <label for="p-old">Şu anki şifre</label><input id="p-old" type="password" autocomplete="current-password" maxlength="72" required>
+      <label for="p-new">Yeni şifre</label><input id="p-new" type="password" autocomplete="new-password" maxlength="72" minlength="4" required>
+      <button type="submit">Kaydet</button><span id="pass-msg" class="dim" role="status"></span>
+    </form>
+  </div>
+
+  <section aria-labelledby="h-map">
+    <h2 id="h-map">Bölüm seç</h2>
+    <div class="chapters" id="chapters"></div>
+    <div class="subs" id="subs"></div>
+    <p class="lvinfo" id="lvinfo"></p>
+  </section>
+
+  <div class="stage">
+    <canvas id="game" tabindex="0" aria-label="Prolar oyun alanı. Başlamak için tıkla ya da Enter'a bas."></canvas>
+  </div>
+
+  <section class="lobby" id="lobby" aria-labelledby="h-lobby">
+    <h2 id="h-lobby">Online lobi</h2>
+    <div id="lobby-out" class="lbrow">
+      <button type="button" id="lb-create" class="primary">Lobi kur</button>
+      <span class="dim">ya da</span>
+      <form id="lb-join-form" class="lbjoin">
+        <label for="lb-join-code" class="dim">Arkadaşının kodu</label>
+        <input id="lb-join-code" maxlength="5" inputmode="numeric" pattern="[0-9]*" autocomplete="off" placeholder="12345" spellcheck="false">
+        <button type="submit">Katıl</button>
+      </form>
+    </div>
+    <div id="lobby-in" hidden>
+      <div class="lbrow">
+        <span class="kv">Kod <b id="lb-code" class="code"></b></span>
+        <button type="button" id="lb-copy" class="ghost">Kopyala</button>
+        <span class="kv">Bölüm <b id="lb-sel"></b></span>
+        <span class="dim" id="lb-ping"></span>
+        <span class="spacer"></span>
+        <button type="button" id="lb-ready" aria-pressed="false">Hazırım</button>
+        <button type="button" id="lb-start" class="primary" disabled>Birlikte başlat</button>
+        <button type="button" id="lb-leave" class="ghost">Lobiden çık</button>
+      </div>
+      <p id="lb-role" class="lbline"></p>
+      <p id="lb-partner" class="lbline"></p>
+    </div>
+    <p id="lobby-msg" class="lbline warn" role="status"></p>
+    <p class="dim small">Bu bir hazırlık. Şu an lobi, kodla katılma, hazır olma, ping ve aynı arenada birbirinizi görme çalışıyor. Düşmanlar henüz her ekranda ayrı hesaplanıyor, ortak düşman bir sonraki adım.</p>
+  </section>
+
+  <section aria-labelledby="h-char">
+    <h2 id="h-char">Karakter ve envanter</h2>
+    <p class="locknote" id="inv-lock" hidden>Bölüm sürerken envanter kapalı. Esc ile duraklatıp M ile ana ekrana dönebilirsin.</p>
+    <div class="bench" id="bag-wrap">
+      <div>
+        <ul class="slots" id="slots"></ul>
+        <div class="stats" id="stats"></div>
+      </div>
+      <div>
+        <div class="filters">
+          <label class="dim" for="f-cls">Class</label><select id="f-cls"></select>
+          <label class="dim" for="f-slot">Yuva</label><select id="f-slot"></select>
+          <label class="dim" for="f-tier">Bölüm</label><select id="f-tier"></select>
+        </div>
+        <div class="bagbar"><span id="bag-count" class="dim"></span><span class="bagbtns"><button type="button" id="b-sellcls" class="ghost">Class'ıma uymayanları sat</button><button type="button" id="b-selldup" class="ghost">Kopyaları sat</button></span></div>
+        <div class="quick" id="quick" hidden>Admin: hazır set kuşan (seçili bölüm seviyesinde):
+          <button type="button" data-q="okcu">Okçu</button>
+          <button type="button" data-q="suikastci">Suikastçı</button>
+          <button type="button" data-q="tank">Tank</button>
+          <button type="button" data-q="buyucu">Büyücü</button>
+        </div>
+        <div class="items" id="items"></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="market" id="market" aria-labelledby="h-market">
+    <h2 id="h-market">Market</h2>
+    <div class="mkbar">
+      <span class="kv">Altının <b id="mk-gold" class="gold">0</b></span>
+      <span class="kv">Yeni ürünlere <b id="mk-timer"></b></span>
+      <span class="spacer"></span>
+      <button type="button" id="mk-reroll"></button>
+    </div>
+    <p class="dim small">Market her saat başı kendiliğinden yenilenir. Ürünler açtığın en yüksek bölümden ve öncekilerden gelir. Nadir eşyalar markette satılmaz, sadece belli düşmanlardan düşer. Envanterde sattığın her eşya altın olarak hesabına geçer.</p>
+    <div class="items" id="mk-items"></div>
+  </section>
+
+  <div class="shelf">
+    <section aria-labelledby="h-keys">
+      <h2 id="h-keys">Kontroller</h2>
+      <dl class="keys">
+        <dt><kbd>A</kbd><kbd>D</kbd></dt><dd>Koş</dd>
+        <dt><kbd>W</kbd><kbd>Boşluk</kbd></dt><dd>Zıpla, üst sıraya çık</dd>
+        <dt><kbd>S</kbd></dt><dd>Alt sıraya in</dd>
+        <dt><kbd>Sol tık</kbd></dt><dd>Saldır. Okçu ve büyücü imlece nişan alır, her tıkta bir kez atar</dd>
+        <dt><kbd>Sağ tık</kbd></dt><dd>Tank: basılı tut, kalkan. Büyücü: zayıf büyü küresi</dd>
+        <dt><kbd>Shift</kbd><kbd>K</kbd></dt><dd>Dodge. Büyücü imlecin olduğu yere ışınlanır</dd>
+        <dt><kbd>R</kbd></dt><dd>Yeniden dene</dd>
+        <dt><kbd>N</kbd></dt><dd>Kazandıktan sonra sıradaki bölüm</dd>
+        <dt><kbd>Esc</kbd><kbd>M</kbd></dt><dd>Duraklat, ana ekrana dön</dd>
+      </dl>
+      <details open>
+        <summary>Class'lar</summary>
+        <ul>
+          <li><b>Okçu</b> (yay): uzaktan nişanlı ok. <span>En hızlı yenilenen ve en uzun dodge. Bloklayamaz.</span></li>
+          <li><b>Suikastçı</b> (hançer): kısa menzil, hızlı vuruş, arkadan ×2. <span>Dokunulmazlığı en uzun dodge.</span></li>
+          <li><b>Tank</b> (kılıç ve kalkan): sağ tıkla önden gelen ok ve vuruşları bloklar, tam zamanında parry yapar. <span>Dodge'u kısa ve geç yenilenir. Çekiçle kalkan yoktur.</span></li>
+          <li><b>Büyücü</b> (asa): asaya göre şimşek, ayaz, şifa ya da bariyer. <span>Dodge yerine ışınlanır, hasarı düşüktür. Şimşek bosslara işlemez.</span></li>
+          <li>Aynı class'tan 4 zırh parçası kuşanınca set bonusu açılır.</li>
+        </ul>
+      </details>
+      <details>
+        <summary>Elementler ve senkron</summary>
+        <ul>
+          <li>Silahın elementi düşmanın zayıflığıysa ×1,5, düşmanla aynı elementse ×0,5 vurur.</li>
+          <li>Her bölümün düşürdüğü element bir sonraki bölümün zayıflığıdır.</li>
+          <li>Seçili bölümden yüksek eşyaların taban gücü o bölüme indirilir. Element bonusu kalır.</li>
+        </ul>
+      </details>
+      <details open>
+        <summary>Elit düşman renkleri</summary>
+        <ul class="elites">
+          <li><i class="sw" style="--c:#a45ee6"></i><b>Mor:</b> öfkelendi, daha hızlı saldırır. <span>Canı %35 altına inince olur.</span></li>
+          <li><i class="sw" style="--c:#e0453a"></i><b>Kırmızı:</b> zırhı aktif, yarım hasar alır. <span>Canının %40'ı gidince zırh kırılır.</span></li>
+          <li><i class="sw" style="--c:#f0d640"></i><b>Sarı:</b> kendine can basıyor. <span>2 sn vurmazsan yenilenir, baskıyı bırakma.</span></li>
+          <li><i class="sw sw-ghost"></i><b>Saydam:</b> 2 sn görünmez, sadece silik bir çerçevesi kalır.</li>
+          <li><i class="sw" style="--c:#ff9a3a"></i><b>Turuncu nabız:</b> ölünce patlar. <span>Öldürdükten sonra çemberden uzaklaş.</span></li>
+          <li>Elitler iki kat altın düşürür.</li>
+        </ul>
+      </details>
+    </section>
+
+    <section aria-labelledby="h-tune">
+      <h2 id="h-tune">Denge ayarları</h2>
+      <div class="sliders">
+        <div class="slider">
+          <label for="s-tell">Boss zıplama → atış</label><output id="o-tell" for="s-tell"></output>
+          <input type="range" id="s-tell" min="120" max="500" step="10">
+          <small>Boss zıpladıktan kaç ms sonra atar. Öncesinde ayrıca kısa bir çömelme var.</small>
+        </div>
+        <div class="slider">
+          <label for="s-speed">Boss mermi hızı</label><output id="o-speed" for="s-speed"></output>
+          <input type="range" id="s-speed" min="900" max="2400" step="50">
+          <small>Mızrağın hızı. Küre, ok ve buz parçası bunun belli bir oranında uçar.</small>
+        </div>
+        <div class="slider">
+          <label for="s-iframe">Temel dodge koruması</label><output id="o-iframe" for="s-iframe"></output>
+          <input type="range" id="s-iframe" min="120" max="420" step="10">
+          <small>Class'lar bunun üstüne ekler ya da çıkarır.</small>
+        </div>
+        <div class="slider">
+          <label for="s-cd">Temel dodge bekleme süresi</label><output id="o-cd" for="s-cd"></output>
+          <input type="range" id="s-cd" min="300" max="1300" step="50">
+          <small>Okçuda daha kısa, tankta daha uzun.</small>
+        </div>
+      </div>
+      <div class="row">
+        <label class="check" for="s-boxes"><input type="checkbox" id="s-boxes"> Hitbox'ları göster</label>
+        <button type="button" id="b-reset">Varsayılanlar</button>
+      </div>
+    </section>
+
+    <section aria-labelledby="h-log">
+      <h2 id="h-log">Boss'un son atışları</h2>
+      <p class="note" id="win-note"></p>
+      <div class="tablewrap">
+        <table>
+          <thead><tr><th>#</th><th>İsabet</th><th>Basışın</th><th>Sonuç</th></tr></thead>
+          <tbody id="log"></tbody>
+        </table>
+      </div>
+      <div class="att"><span id="att-label">Deneme sayısı</span> <b id="att">0</b> <button type="button" id="b-att">Sıfırla</button></div>
+    </section>
+  </div>
+  </div>
+</div>
+<div id="flash" class="flash" role="status" hidden></div>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
+<script src="js/data.js"></script>
+<script src="js/net.js"></script>
+<script src="js/icons.js"></script>
+<script src="js/game.js"></script>
+</body>
+</html>

@@ -1,0 +1,16 @@
+{
+ "name": "Prolar",
+ "short_name": "Prolar",
+ "lang": "tr",
+ "description": "Arkadaşlarla online oynanan 2D platform hack and slash oyunu.",
+ "start_url": "./",
+ "scope": "./",
+ "display": "standalone",
+ "background_color": "#18141f",
+ "theme_color": "#18141f",
+ "icons": [
+  {"src": "icon-192.png", "sizes": "192x192", "type": "image/png"},
+  {"src": "icon-512.png", "sizes": "512x512", "type": "image/png"},
+  {"src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable"}
+ ]
+}
