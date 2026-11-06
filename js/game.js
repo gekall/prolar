@@ -46,9 +46,14 @@ const store = {
   get(k, d){ try { const v = localStorage.getItem(k); return v == null ? d : JSON.parse(v); } catch(_) { return d; } },
   set(k, v){ try { localStorage.setItem(k, JSON.stringify(v)); } catch(_) {} }
 };
+/* oyun ayarları: sadece admin hesabı değiştirebilir. Diğer herkes her zaman varsayılan değerlerle oynar. */
 const set = Object.assign({}, DEF);
-const savedSet = store.get('prolar.set2', {});
-for (const k in DEF) if (typeof savedSet[k] === 'number') set[k] = clamp(savedSet[k], LIM[k][0], LIM[k][1]);
+function applySettings(isAdmin){
+  Object.assign(set, DEF);
+  if (!isAdmin) return;
+  const saved = store.get('prolar.set2', {});
+  for (const k in DEF) if (saved && typeof saved[k] === 'number') set[k] = clamp(saved[k], LIM[k][0], LIM[k][1]);
+}
 let att = store.get('prolar.att3', {}); if (!att || typeof att !== 'object') att = {};
 let sel = store.get('prolar.sel', {c:1, s:1});
 if (!sel || !(sel.c >= 1 && sel.c <= 10) || !(sel.s >= 1 && sel.s <= 50)) sel = {c:1, s:1};
@@ -146,11 +151,12 @@ const SL = [
   ['iframe', 's-iframe', 'o-iframe', v => v + ' ms'],
   ['cd', 's-cd', 'o-cd', v => v + ' ms']
 ];
+const canTune = () => !!(acct && acct.admin);
 for (const [k, id] of SL){
-  $(id).addEventListener('input', ev => { set[k] = +ev.target.value; store.set('prolar.set2', set); onGearChange(); });
+  $(id).addEventListener('input', ev => { if (!canTune()) return; set[k] = +ev.target.value; store.set('prolar.set2', set); onGearChange(); });
 }
-$('b-reset').addEventListener('click', () => { Object.assign(set, DEF); store.set('prolar.set2', set); onGearChange(); });
-$('s-boxes').addEventListener('change', ev => { showBoxes = ev.target.checked; });
+$('b-reset').addEventListener('click', () => { if (!canTune()) return; Object.assign(set, DEF); store.set('prolar.set2', set); onGearChange(); });
+$('s-boxes').addEventListener('change', ev => { showBoxes = canTune() && ev.target.checked; ev.target.checked = showBoxes; });
 $('b-att').addEventListener('click', () => { att[attKey()] = 0; store.set('prolar.att3', att); syncUI(); });
 
 /* bölüm seçici */
@@ -2251,6 +2257,7 @@ function renderAcct(){
   sy.textContent = acct.offline ? 'İlerleme bu tarayıcıda kaydediliyor' : syncState === 'saving' ? 'Kaydediliyor…' : syncState === 'err' ? `Kaydedilemedi: ${syncMsg}` : 'Kaydedildi';
   sy.classList.toggle('err', syncState === 'err' && !acct.offline);
   $('ab-admin-wrap').hidden = !acct.admin;
+  $('tune').hidden = !acct.admin;
   $('ab-admin').checked = adminView;
   $('b-pass').hidden = acct.offline;
   const mg = $('mk-gold'); if (mg) mg.textContent = prof.gold;
@@ -2268,9 +2275,11 @@ async function doAuth(kind){
   } catch (e){ msg.textContent = cleanErr(e); }
 }
 function loggedIn(r, offline){
-  /* admin hesabı: her şey açık gelir. Çevrimdışı mod sadece bu tarayıcıda kaldığı için orada da test görünümü açılabilir. */
-  acct = {token:r.token || null, id:r.id || null, name:r.name, admin:!!r.is_admin || offline, offline};
-  adminView = !!r.is_admin; syncState = 'ok'; syncMsg = '';
+  /* admin hesabı: her şey açık gelir, oyun ayarlarını sadece o değiştirebilir */
+  acct = {token:r.token || null, id:r.id || null, name:r.name, admin:!!r.is_admin && !offline, offline};
+  adminView = acct.admin; syncState = 'ok'; syncMsg = '';
+  applySettings(acct.admin);
+  showBoxes = false; $('s-boxes').checked = false;
   setProfile(r.save);
   if (!unlocked(sel.c, sel.s)) sel = {c:prof.prog.c, s:prof.prog.s};
   fTier = adminView ? sel.c : 'all';
@@ -2285,6 +2294,7 @@ $('b-logout').addEventListener('click', async () => {
   await flushSave(); lobbyLeave();
   if (acct && !acct.offline && acct.token){ try { await NET.logout(acct.token); } catch (_) {} }
   store.set('prolar.token', null); acct = null; adminView = false; setProfile(null);
+  applySettings(false); showBoxes = false; $('s-boxes').checked = false;
   S = makeState('title'); renderAcct();
 });
 $('ab-admin').addEventListener('change', ev => {

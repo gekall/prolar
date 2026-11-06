@@ -173,6 +173,7 @@ button.ghost{background:transparent}
 .mkbar{display:flex;flex-wrap:wrap;align-items:center;gap:8px 18px;margin-bottom:6px}
 .market .items{max-height:none}
 .shelf{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.1fr) minmax(0,1.3fr);gap:28px}
+.shelf:has(> #tune[hidden]){grid-template-columns:minmax(0,1fr) minmax(0,1.3fr)}
 @media (max-width:920px){.shelf{grid-template-columns:minmax(0,1fr)}}
 .keys{display:grid;grid-template-columns:auto minmax(0,1fr);gap:8px 14px;margin:0;align-items:baseline}
 .keys dt{display:flex;gap:4px;flex-wrap:wrap}
@@ -381,8 +382,8 @@ tr.empty td{font-family:var(--body);font-weight:400;color:var(--dust);white-spac
       </details>
     </section>
 
-    <section aria-labelledby="h-tune">
-      <h2 id="h-tune">Denge ayarları</h2>
+    <section id="tune" aria-labelledby="h-tune" hidden>
+      <h2 id="h-tune">Denge ayarları · sadece admin</h2>
       <div class="sliders">
         <div class="slider">
           <label for="s-tell">Boss zıplama → atış</label><output id="o-tell" for="s-tell"></output>
