@@ -100,6 +100,7 @@ function itemIconSVG(it, size, plain){
 }
 /* ---------- etki etiketlerinin küçük ikonları ---------- */
 const TAG_SVG = {
+  crit:'<path d="M8 1.5l1.7 4.2 4.5.3-3.5 2.9 1.1 4.4L8 10.9l-3.8 2.4 1.1-4.4L1.8 6l4.5-.3z" fill="currentColor"/>',
   aoe:'<circle cx="8" cy="8" r="2.3" fill="currentColor"/><circle cx="8" cy="8" r="5.6" fill="none" stroke="currentColor" stroke-width="1.3" stroke-dasharray="2.2 1.6"/>',
   single:'<circle cx="8" cy="8" r="5" fill="none" stroke="currentColor" stroke-width="1.3"/><circle cx="8" cy="8" r="1.6" fill="currentColor"/><path d="M8 1v3M8 12v3M1 8h3M12 8h3" stroke="currentColor" stroke-width="1.3"/>',
   pierce:'<path d="M5 3.5v9M9 3.5v9" stroke="currentColor" stroke-width="1.2" opacity=".55"/><path d="M1 8h11" stroke="currentColor" stroke-width="1.5"/><path d="M15 8l-4-2.8v5.6z" fill="currentColor"/>',

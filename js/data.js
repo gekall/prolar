@@ -95,7 +95,7 @@ const ARCH = {
 };
 const BASE_ARCH = ['tank', 'runner', 'ranged'];
 /* özel türler bölüm içinde sırayla tanıtılır: ilk bölümlerde geç, ileri bölümlerde erken gelir */
-const SPECIAL_AT = {flyer:4, jumper:7, exploder:9, lobber:11, burrower:14, healer:18, charger:22};
+const SPECIAL_AT = {flyer:3, jumper:5, exploder:6, lobber:8, burrower:10, healer:12, charger:14};
 const specialOk = (a, c, s) => s >= Math.ceil(SPECIAL_AT[a] * (c <= 2 ? 1 : c <= 4 ? .5 : .2));
 /* elit özellikleri: ileri bölümlerde düşmanlara eklenir */
 /* col: elit özelliği aktifken düşmanın aldığı renk */
@@ -130,22 +130,53 @@ const BOSSES = {
   devakrep:      {ad:'Dev Akrep',         hp:320, w:66, h:44, body:'#a07a40', head:'beast',  weapon:'claws',  proj:'orb',    atk:['lunge','charge','volley']},
   firavun:       {ad:'Firavun',           hp:420, w:36, h:70, body:'#c8a050', head:'crown',  weapon:'staff',  proj:'orb',    atk:['row','summon','volley','throw']},
   zamanbekcisi:  {ad:'Zaman Bekçisi',     hp:360, w:40, h:68, body:'#4a3a80', head:'helmet', weapon:'sword',  proj:'orb',    atk:['lunge','volley','row','slam'], weak1:'buz', weak2:'zehir'},
-  sonsaat:       {ad:'Zamanın Efendisi',  hp:480, w:44, h:76, body:'#3a2a70', head:'halo',   weapon:'staff',  proj:'orb',    atk:['throw','lunge','leap','row','volley','charge','slam','summon'], weak1:'yildirim', weak2:'kutsal'}
+  sonsaat:       {ad:'Zamanın Efendisi',  hp:480, w:44, h:76, body:'#3a2a70', head:'halo',   weapon:'staff',  proj:'orb',    atk:['throw','lunge','leap','row','volley','charge','slam','summon','rain','ring'], weak1:'yildirim', weak2:'kutsal'},
+  /* 30. ve 45. alt bölüm bossları */
+  zindanbekcisi: {ad:'Zindan Bekçisi',    hp:280, w:46, h:64, body:'#5a4a3a', head:'helmet', weapon:'hammer', proj:'arrow',  atk:['slam','combo','charge']},
+  kemiklord:     {ad:'Kemik Okçu Lordu',  hp:300, w:32, h:64, body:'#9a92a4', head:'skull',  weapon:'staff',  proj:'arrow',  atk:['volley','rain','throw','row']},
+  buzdevi:       {ad:'Buz Devi',          hp:300, w:58, h:76, body:'#9cc4dc', head:'beast',  weapon:'hammer', proj:'shard',  atk:['slam','leap','ring']},
+  karcadisi:     {ad:'Kar Cadısı',        hp:320, w:32, h:64, body:'#6fa0c8', head:'hat',    weapon:'staff',  proj:'shard',  atk:['rain','volley','row','summon']},
+  curukagac:     {ad:'Çürük Ağaç',        hp:320, w:60, h:80, body:'#4a5a2a', head:'horns',  weapon:'claws',  proj:'orb',    atk:['slam','summon','ring']},
+  sinekkralice:  {ad:'Sinek Kraliçesi',   hp:300, w:40, h:58, body:'#5a6a3a', head:'beast',  weapon:'spear',  proj:'orb',    atk:['combo','rain','lunge','summon']},
+  buharsovalye:  {ad:'Buhar Şövalyesi',   hp:320, w:40, h:66, body:'#6a5a4a', head:'helmet', weapon:'sword',  proj:'bullet', atk:['combo','charge','volley']},
+  topcuustasi:   {ad:'Topçu Ustası',      hp:330, w:52, h:60, body:'#5a4a30', head:'hat',    weapon:'drill',  proj:'bullet', atk:['rain','ring','volley','row']},
+  dalgalordu:    {ad:'Dalga Lordu',       hp:330, w:38, h:70, body:'#2a5a6a', head:'crown',  weapon:'spear',  proj:'spear',  atk:['throw','combo','row']},
+  devyengec:     {ad:'Dev Yengeç',        hp:360, w:70, h:50, body:'#a05030', head:'beast',  weapon:'claws',  proj:'orb',    atk:['charge','slam','ring','lunge']},
+  atesdevi:      {ad:'Ateş Devi',         hp:360, w:58, h:78, body:'#9a3a18', head:'horns',  weapon:'hammer', proj:'orb',    atk:['slam','rain','leap']},
+  ucbaslikopek:  {ad:'Üç Başlı Köpek',    hp:380, w:68, h:56, body:'#5a1a10', head:'beast',  weapon:'claws',  proj:'orb',    atk:['charge','combo','ring','lunge']},
+  nurmuhafizi:   {ad:'Nur Muhafızı',      hp:380, w:42, h:70, body:'#d8cfa8', head:'helmet', weapon:'sword',  proj:'spear',  atk:['combo','throw','row']},
+  yildizkahini:  {ad:'Yıldız Kâhini',     hp:380, w:34, h:66, body:'#b8b0e0', head:'halo',   weapon:'staff',  proj:'orb',    atk:['rain','ring','volley','summon']},
+  devzombi:      {ad:'Zırhlı Dev Zombi',  hp:400, w:58, h:76, body:'#5a6a4a', head:'beast',  weapon:'none',   proj:'orb',    atk:['charge','slam','summon','combo']},
+  dokturcuruk:   {ad:'Doktor Çürük',      hp:380, w:34, h:66, body:'#7a8a6a', head:'hat',    weapon:'staff',  proj:'orb',    atk:['rain','volley','ring','throw']},
+  kumcini:       {ad:'Kum Cini',          hp:400, w:40, h:72, body:'#c8a060', head:'horns',  weapon:'staff',  proj:'orb',    atk:['ring','rain','leap']},
+  cakalmuhafiz:  {ad:'Çakal Başlı Muhafız',hp:420, w:40, h:72, body:'#3a3020', head:'beast',  weapon:'spear',  proj:'spear',  atk:['combo','throw','charge','row']},
+  yanki:         {ad:'Zaman Yankısı',     hp:440, w:36, h:66, body:'#6a5aa0', head:'halo',   weapon:'sword',  proj:'orb',    atk:['combo','ring','rain','lunge'], weak1:'su', weak2:'ates'},
+  kiyametsaati:  {ad:'Kıyamet Saati',     hp:460, w:52, h:74, body:'#2a2050', head:'crown',  weapon:'hammer', proj:'orb',    atk:['slam','rain','row','ring','charge'], weak1:'karanlik', weak2:'buz'}
 };
-const ATK_AD = {throw:'Zıplayıp atış', lunge:'Saplama', leap:'Sıçrayış ve şok dalgası', row:'Sıra saldırısı', volley:'Yelpaze atış', charge:'Hücum', slam:'Yere vuruş', summon:'Yardımcı çağırma'};
+/* her bölümün 30. ve 45. alt bölüm bossları */
+const MID_BOSS = ['zindanbekcisi', 'buzdevi', 'curukagac', 'buharsovalye', 'dalgalordu', 'atesdevi', 'nurmuhafizi', 'devzombi', 'kumcini', 'yanki'];
+const ELITE_BOSS = ['kemiklord', 'karcadisi', 'sinekkralice', 'topcuustasi', 'devyengec', 'ucbaslikopek', 'yildizkahini', 'dokturcuruk', 'cakalmuhafiz', 'kiyametsaati'];
+/* 15, 30, 45: boss dövüşü. 50: bölümün büyük bossu ve yanında düşman dalgaları */
+const BOSS_AT = {15:'mini', 30:'mid', 45:'elite', 50:'boss'};
+const bossOf = (c, s) => { const k = BOSS_AT[s]; if (!k) return null; const ch = CHAPTERS[c - 1]; return k === 'mini' ? ch.mini : k === 'boss' ? ch.boss : k === 'mid' ? MID_BOSS[c - 1] : ELITE_BOSS[c - 1]; };
+const ATK_AD = {throw:'Zıplayıp atış', lunge:'Saplama', leap:'Sıçrayış ve şok dalgası', row:'Sıra saldırısı', volley:'Yelpaze atış', charge:'Hücum', slam:'Yere vuruş', summon:'Yardımcı çağırma', rain:'Gökten yağmur', combo:'Seri saplama', ring:'Halka atış'};
 /* boss saldırı hasarları (bölüm ve alt bölüm çarpanıyla büyür) */
-const BDMG = {throw:20, lunge:22, quake:14, row:22, volley:12, charge:24, slam:20};
+const BDMG = {throw:20, lunge:22, quake:14, row:22, volley:12, charge:24, slam:20, rain:18, ring:12};
 
 /* ---------- class'lar, silahlar, eşyalar ---------- */
 const CLASSES = {
   okcu:      {ad:'Okçu',      col:'#8a9a52', armor:['Kukuleta','Deri Yelek','Deri Pantolon','Av Çizmesi'],
-              set:'Ok hasarı +%20, atış bekleme süresi -%20', parca:'+%5 hasar'},
+              set:'Ok hasarı +%15', parca:'+%5 hasar',
+              yetenek:{ad:'Geri Takla', bilgi:'Dodge seni geriye, daha uzağa atar ve %40 daha hızlı dolar. Taklanın ardından 1,5 sn içinde attığın ilk ok iki kat vurur.'}},
   suikastci: {ad:'Suikastçı', col:'#5a4a78', armor:['Gölge Maskesi','Gölge Yeleği','Sessiz Şalvar','Yumuşak Çizme'],
-              set:'Dodge koruması +80 ms, arkadan vuruş ×3', parca:'+15 ms dodge'},
+              set:'Arkadan vuruş ×2,5', parca:'+%3 kritik',
+              yetenek:{ad:'Gölge Adımı', bilgi:'Dodge ile bir düşmanın içinden geçersen arkasında belirirsin. Sonraki vuruşun kesin kritik olur.'}},
   tank:      {ad:'Tank',      col:'#8e96a8', armor:['Miğfer','Plaka Zırh','Zırhlı Pantolon','Demir Çizme'],
-              set:'Alınan hasar -%20, parry penceresi genişler', parca:'-%4 alınan hasar'},
+              set:'Alınan hasar -%15, parry penceresi genişler', parca:'-%4 alınan hasar',
+              yetenek:{ad:'Kalkan Hücumu', bilgi:'Dodge yerine kısa bir hücum yaparsın. Yolundaki mobları savurur ve 1 sn sersemletir, bosslara hasar verir.'}},
   buyucu:    {ad:'Büyücü',    col:'#7a52b0', armor:['Sivri Şapka','Cübbe','Kumaş Pantolon','Sandalet'],
-              set:'Büyü ve ışınlanma bekleme süreleri -%25', parca:'-%5 bekleme süresi'}
+              set:'Büyü bekleme süreleri -%20', parca:'-%5 bekleme süresi',
+              yetenek:{ad:'Işınlanma', bilgi:'Dodge yerine imlecin olduğu yere ışınlanırsın (en fazla 300 px).'}}
 };
 const SLOTS = ['sapka', 'kiyafet', 'pantolon', 'ayakkabi', 'kolye', 'yuzuk', 'silah'];
 const SLOT_AD = {sapka:'Şapka', kiyafet:'Kıyafet', pantolon:'Pantolon', ayakkabi:'Ayakkabı', kolye:'Kolye', yuzuk:'Yüzük', silah:'Silah'};
@@ -153,28 +184,28 @@ const ARMOR_SLOTS = ['sapka', 'kiyafet', 'pantolon', 'ayakkabi'];
 
 /* kind silahın dövüş şeklini, dodge/sağ tık davranışını belirler */
 const WEAPONS = {
-  yay:      {ad:'Av Yayı',          cls:'okcu',      kind:'bow',    dmg:11, cd:.45, fx:'single',  bilgi:'Tek hedefe güçlü ok. Mouse ile nişan.'},
-  patlayan: {ad:'Patlayan Ok Yayı', cls:'okcu',      kind:'bow',    dmg:7,  cd:.6,  fx:'aoe',     bilgi:'Ok çarptığı yerde patlar. Kalabalıkta iyi, tek bossa zayıf.'},
-  delici:   {ad:'Delici Yay',       cls:'okcu',      kind:'bow',    dmg:8,  cd:.55, fx:'pierce',  bilgi:'Ok yolundaki bütün düşmanlardan geçer.'},
-  hancer:   {ad:'Hançer',           cls:'suikastci', kind:'dagger', dmg:8,  cd:.2,  fx:'single',  bilgi:'Hızlı ve kısa menzil. Arkadan vuruş ×2.'},
-  zehirli:  {ad:'Zehirli Hançer',   cls:'suikastci', kind:'dagger', dmg:5,  cd:.22, fx:'poison',  bilgi:'Zehir 3 sn işler ve yakındaki düşmanlara yayılır.'},
+  yay:      {ad:'Av Yayı',          cls:'okcu',      kind:'bow',    dmg:11, cd:.45, fx:'single',  range:430, bilgi:'Tek hedefe güçlü ok. Mouse ile nişan. Menzil 430.'},
+  patlayan: {ad:'Patlayan Ok Yayı', cls:'okcu',      kind:'bow',    dmg:7,  cd:.6,  fx:'aoe',     range:400, bilgi:'Ok çarptığı yerde ya da menzilin sonunda patlar. Kalabalıkta iyi, tek bossa zayıf. Menzil 400.'},
+  delici:   {ad:'Delici Yay',       cls:'okcu',      kind:'bow',    dmg:9,  cd:.55, fx:'pierce',  range:560, bilgi:'Ok düşmanların içinden geçer, her delişte hasarı %35 düşer. Menzili en uzun yay: 560.'},
+  hancer:   {ad:'Hançer',           cls:'suikastci', kind:'dagger', dmg:8,  cd:.2,  fx:'single',  bilgi:'Hızlı ve kısa menzil. %20 kritik (×1,75), arkadan vuruş ×2.'},
+  zehirli:  {ad:'Zehirli Hançer',   cls:'suikastci', kind:'dagger', dmg:5,  cd:.22, fx:'poison',  bilgi:'Zehir 3 sn işler ve yakındaki düşmanlara yayılır. %20 kritik.'},
   kalkan:   {ad:'Kılıç ve Kalkan',  cls:'tank',      kind:'shield', dmg:9,  cd:.38, fx:'single',  bilgi:'Sağ tık basılı: kalkan. Önden gelen ok ve vuruşları bloklar, tam zamanında parry.'},
   cekic:    {ad:'Savaş Çekici',     cls:'tank',      kind:'hammer', dmg:14, cd:.7,  fx:'aoe',     bilgi:'Önündeki herkese ağır vuruş. Kalkanları deler. Bloklayamaz.'},
   simsek:   {ad:'Şimşek Asası',     cls:'buyucu',    kind:'staff',  dmg:6,  cd:.9,  fx:'stun',    bilgi:'İmleçteki düşmanlara yıldırım. Mobları sersemletir, bosslara işlemez.'},
-  ayaz:     {ad:'Ayaz Asası',       cls:'buyucu',    kind:'staff',  dmg:7,  cd:.5,  fx:'slow',    bilgi:'Buz parçası atar, düşmanı ve hazırlık sürelerini yavaşlatır.'},
+  ayaz:     {ad:'Ayaz Asası',       cls:'buyucu',    kind:'staff',  dmg:7,  cd:.5,  fx:'slow',    range:460, bilgi:'Buz parçası atar, düşmanı ve hazırlık sürelerini yavaşlatır. Menzil 460.'},
   sifa:     {ad:'Şifa Asası',       cls:'buyucu',    kind:'staff',  dmg:0,  cd:3.5, fx:'heal',    bilgi:'Canının %25\'ini yeniler. Co-op\'ta arkadaşını da iyileştirecek.'},
   bariyer:  {ad:'Bariyer Asası',    cls:'buyucu',    kind:'staff',  dmg:0,  cd:6,   fx:'barrier', bilgi:'Bir sonraki vuruşu emen kalkan basar.'}
 };
 const FIST = {ad:'Yumruk', cls:null, kind:'fist', dmg:5, cd:.3, fx:'single', bilgi:'Çıplak el.'};
-/* class'a göre savunma: dodge çarpanları ve sağ tık */
+/* herkesin dodge'u aynı. Class'ın 4 zırh parçası tamamlanınca dodge, class yeteneğine dönüşür (CLASSES.yetenek). */
 const DEFENSE = {
-  fist:   {ad:'Normal dodge',               cdMul:1,    distMul:1,   ifrAdd:0},
-  bow:    {ad:'Güçlü dodge',                cdMul:.6,   distMul:1.3, ifrAdd:40},
-  dagger: {ad:'Uzun dokunulmazlıklı dodge', cdMul:1,    distMul:1.1, ifrAdd:70},
-  shield: {ad:'Zayıf dodge, sağ tık kalkan', cdMul:1.45, distMul:.75, ifrAdd:-40},
-  hammer: {ad:'Zayıf dodge',                cdMul:1.3,  distMul:.85, ifrAdd:-20},
-  staff:  {ad:'Işınlanma',                  blink:true, blinkCd:1.6, range:300}
+  normal: {ad:'Normal dodge', cdMul:1, distMul:1, ifrAdd:0},
+  okcu:   {ad:'Geri Takla', cdMul:.6, distMul:1.35, ifrAdd:40, back:true},
+  suikastci: {ad:'Gölge Adımı', cdMul:1, distMul:1.1, ifrAdd:60, shadow:true},
+  tank:   {ad:'Kalkan Hücumu', cdMul:1.15, distMul:1.2, ifrAdd:0, bash:true},
+  buyucu: {ad:'Işınlanma', blink:true, blinkCd:1.4, range:300}
 };
+const CRIT = {dagger:{ch:.2, mul:1.75}};
 
 const ITEMS = [];
 (function makeItems(){
@@ -229,24 +260,29 @@ const ITEM_BY_ID = Object.fromEntries(ITEMS.map(i => [i.id, i]));
 const DROP = {mob:{tank:.05, ranged:.04, runner:.03, flyer:.035, burrower:.05, exploder:.025, healer:.06, jumper:.035, charger:.06, lobber:.045},
   eliteMul:2.5, chestFirst:.6, chestRepeat:.2,
   miniExtra:.3, bossExtra:.5, rare:.02, rareElite:.05, smart:.5};
-/* 1. bölümde zırh 210, takı 250, silah 300 altın. Satış fiyatı alışın %30'u. */
-const PRICE = it => Math.round((it.slot === 'silah' ? 300 : it.jewel ? 250 : 210) * TF(it.tier) * (it.rare ? 3 : 1));
+/* 1. bölümde zırh 300, takı 360, silah 450 altın; her bölümde ×1,45. Satış fiyatı alışın %30'u. */
+const PRICE = it => Math.round((it.slot === 'silah' ? 450 : it.jewel ? 360 : 300) * TF(it.tier) * (it.rare ? 3 : 1));
 const SELL = it => Math.max(1, Math.round(PRICE(it) * .3));
 const SHOP_SIZE = 6;
-const REROLL_COST = c => Math.round(40 * TF(c));
+const REROLL_COST = c => Math.round(60 * TF(c));
 
 /* ---------- bölüm üretimi ---------- */
 function rng(seed){
   let s = (seed * 2654435761) >>> 0 || 1;
   return () => { s ^= s << 13; s >>>= 0; s ^= s >>> 17; s ^= s << 5; s >>>= 0; return (s % 100000) / 100000; };
 }
-/* 5 arena düzeni. 2. sıra y=370, 3. sıra y=260 */
+/* 10 arena düzeni. 2. sıra y=370, 3. sıra y=260. Zıplama yüksekliği 150 px: 3. sıraya 2. sıradan çıkılır. */
 const LAYOUTS = [
   [{x:110, y:370, w:300}, {x:550, y:370, w:300}, {x:330, y:260, w:300}],
   [{x:60, y:370, w:240}, {x:360, y:370, w:240}, {x:660, y:370, w:240}, {x:210, y:260, w:200}, {x:550, y:260, w:200}],
   [{x:200, y:370, w:560}, {x:50, y:260, w:220}, {x:690, y:260, w:220}],
   [{x:60, y:370, w:280}, {x:620, y:370, w:280}, {x:390, y:260, w:180}],
-  [{x:310, y:370, w:340}, {x:60, y:260, w:250}, {x:650, y:260, w:250}]
+  [{x:310, y:370, w:340}, {x:60, y:260, w:250}, {x:650, y:260, w:250}],
+  [{x:50, y:370, w:170}, {x:290, y:370, w:150}, {x:520, y:370, w:150}, {x:740, y:370, w:170}, {x:380, y:260, w:200}],
+  [{x:80, y:370, w:200}, {x:380, y:370, w:200}, {x:680, y:370, w:200}, {x:220, y:260, w:520}],
+  [{x:410, y:370, w:140}, {x:90, y:260, w:310}, {x:560, y:260, w:310}],
+  [{x:50, y:370, w:400}, {x:510, y:370, w:400}],
+  [{x:150, y:370, w:190}, {x:620, y:370, w:190}, {x:50, y:260, w:170}, {x:395, y:260, w:170}, {x:740, y:260, w:170}]
 ];
 const FORMS = {
   oncu:   'Öncü hat: tank önde, menzilliler arkada',
@@ -264,32 +300,48 @@ const FORM_KEYS = Object.keys(FORMS);
 function levelDef(c, s){
   const R = rng(c * 1009 + s * 31 + 7);
   const ch = CHAPTERS[c - 1];
-  const kind = s === 50 ? 'boss' : s === 25 ? 'mini' : 'level';
+  const boss = bossOf(c, s);
+  const kind = s === 50 ? 'boss' : boss ? 'mini' : 'level';
   const li = kind === 'boss' && c === 1 ? 0 : (c * 3 + s * 7) % LAYOUTS.length;
-  const layout = LAYOUTS[li];
-  /* tuzaklar: alt bölüm ilerledikçe artar */
-  const traps = [];
+  const layout = LAYOUTS[li].map(p => Object.assign({}, p));
+  const def = {c, s, kind, layout, li, traps:[], waves:null, boss};
+  /* 50. alt bölüm: boss ve yanında dalgalar. Diğer bölümlerde sadece dalgalar. */
+  if (kind === 'level') def.waves = genWaves(c, s, R, layout);
+  else if (kind === 'boss') def.waves = genWaves(c, 30, R, layout).slice(0, 3).map(w => ({form:w.form, mobs:w.mobs.slice(0, 4 + Math.floor(c / 3))}));
+  /* platform türleri: kırılan (üstünde durunca çöker, 3 sn sonra geri gelir), hareketli (yana kayar).
+     Düşmanların durduğu platformlar normal kalır. 2. bölümde platformlar buzludur, kayarsın. */
+  const homes = new Set();
+  for (const w of def.waves || []) for (const m of w.mobs) if (m.home != null) homes.add(m.home % layout.length);
+  if (c === 2) layout.forEach(p => { p.ice = true; });
+  if (kind === 'level' && s >= 4){
+    const crumble = Math.min(.45, .15 + s / 120), move = s >= 9 ? Math.min(.4, .1 + s / 140) : 0;
+    layout.forEach((p, i) => {
+      if (homes.has(i)) return;
+      const r = R();
+      if (r < crumble) p.kind = 'kirilan';
+      else if (r < crumble + move){ p.kind = 'hareketli'; p.x0 = p.x; p.amp = 40 + Math.floor(R() * 40); p.per = 3 + R() * 2; p.ph = R() * 6.28; }
+    });
+  }
+  /* tuzaklar: sadece normal platformlarda, alt bölüm ilerledikçe artar */
   const nt = kind === 'level' ? Math.min(4, 1 + Math.floor(s / 14) + (c >= 6 ? 1 : 0)) : Math.min(3, 1 + Math.floor(c / 4));
+  const ok = layout.map((p, i) => i).filter(i => !layout[i].kind);
   const used = new Set();
-  for (let i = 0; i < nt; i++){
-    let pi = Math.floor(R() * layout.length), tries = 0;
-    while (used.has(pi) && tries++ < 6) pi = Math.floor(R() * layout.length);
+  for (let i = 0; i < nt && ok.length; i++){
+    let pi = ok[Math.floor(R() * ok.length)], tries = 0;
+    while (used.has(pi) && tries++ < 6) pi = ok[Math.floor(R() * ok.length)];
+    if (used.has(pi)) continue;
     used.add(pi);
     const pl = layout[pi], w = 70 + Math.floor(R() * 3) * 10;
     const x = pl.x + 20 + Math.floor(R() * Math.max(1, pl.w - w - 40));
-    traps.push({x, y:pl.y, w, period:3 + R() * .8, off:R() * 3});
+    def.traps.push({x, y:pl.y, w, period:3 + R() * .8, off:R() * 3});
   }
-  const def = {c, s, kind, layout, li, traps, waves:null, boss:null};
-  if (kind === 'boss') def.boss = ch.boss;
-  else if (kind === 'mini') def.boss = ch.mini;
-  else def.waves = genWaves(c, s, R, layout);
   return def;
 }
 function genWaves(c, s, R, layout){
-  const n = (s < 10 ? 2 : s < 30 ? 3 : 4) + (c >= 5 && s > 20 ? 1 : 0);
+  const n = (s < 4 ? 2 : s < 20 ? 3 : 4) + (c >= 3 && s > 25 ? 1 : 0);
   const waves = [];
   for (let wi = 0; wi < n; wi++){
-    const size = Math.min(9, 2 + Math.floor(s / 10) + wi + Math.floor((c - 1) / 3));
+    const size = Math.min(12, 3 + Math.floor(s / 7) + wi + Math.floor((c - 1) / 2));
     const keys = FORM_KEYS.filter(k => (k !== 'hava' || specialOk('flyer', c, s)) && (k !== 'karma' || s >= 15 || c >= 3));
     const form = s <= 3 ? 'oncu' : keys[Math.floor(R() * keys.length)];
     waves.push({form, mobs:buildForm(form, size, c, s, R, layout)});
@@ -314,9 +366,11 @@ function buildForm(form, size, c, s, R, layout){
     return ps.length ? ps[Math.floor(R() * ps.length)] : plats[Math.floor(R() * plats.length)];
   };
   const list = [];
+  /* v: saldırı varyantı (aynı türün farklı saldırı şekli), alt bölüm ilerledikçe sıklaşır */
+  const pv = Math.min(.65, Math.max(0, (s - 5) / 30 + (c - 1) * .07));
   const add = (a, x, home) => {
     const origin = c === 10 ? 1 + Math.floor(R() * 9) : c;
-    list.push({a, x, home, origin, aff:pickAffixes(c, s, R)});
+    list.push({a, x, home, origin, aff:pickAffixes(c, s, R), v:R() < pv ? 1 : 0});
   };
   if (form === 'oncu'){
     add('tank', 480 + side * 240);
