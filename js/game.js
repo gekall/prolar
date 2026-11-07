@@ -517,7 +517,7 @@ window.addEventListener('keydown', ev => {
 window.addEventListener('keyup', ev => { const a = MAP[ev.code]; if (a) keys.delete(a); });
 function pauseIfPlaying(){ if (S.mode === 'play' && !S.net) paused = true; keys.clear(); }
 window.addEventListener('blur', pauseIfPlaying);
-cv.addEventListener('blur', pauseIfPlaying);
+cv.addEventListener('blur', () => { if (!touchMode) pauseIfPlaying(); });
 function toGame(ev){ const r = cv.getBoundingClientRect(); mouse.x = (ev.clientX - r.left) / r.width * W; mouse.y = (ev.clientY - r.top) / r.height * H; }
 cv.addEventListener('pointermove', toGame);
 cv.addEventListener('pointerdown', ev => {
@@ -532,6 +532,185 @@ const release = ev => { if (ev.button === 0) keys.delete('attack'); if (ev.butto
 cv.addEventListener('pointerup', release);
 window.addEventListener('pointerup', release);
 cv.addEventListener('contextmenu', ev => ev.preventDefault());
+/* ===================== MOBİL: DOKUNMATİK KONTROLLER =====================
+   Telefonda bölüm başlayınca oyun tam ekrana geçer (Android'de ekran yataya kilitlenir; iPhone'da telefonu yan
+   çevirmen istenir). Sol yarıda parmağının değdiği yerde joystick belirir: sağa sola koşarsın, aşağı çekince alt
+   sıraya inersin, yukarı itince zıplarsın. Sağda Saldır, Zıpla, Dodge ve kalkan ya da asa varsa ikinci tuş var.
+   Okçu ve büyücü elle nişan alır: Saldır düğmesini sürükleyip bırakınca o yöne atar ya da ekranda dokunduğun yere atar. */
+let touchMode = window.matchMedia ? matchMedia('(pointer: coarse)').matches : false;
+const tc = {stick:null, aim:null, dodge:null, alt:null, menu:false, keys:new Set()};
+function setTouchMode(on){ if (touchMode === on) return; touchMode = on; document.body.classList.toggle('touch', on); }
+document.body.classList.toggle('touch', touchMode);
+window.addEventListener('pointerdown', ev => { if (ev.pointerType) setTouchMode(ev.pointerType !== 'mouse'); }, true);
+/* tam ekran ve yatay kilit: tarayıcı bunu sadece dokunma anında izin verir (Android). iPhone'da tam ekran yok, telefonu çevirmek gerekir. */
+function goFull(){
+  if (!touchMode) return;
+  const de = document.documentElement;
+  if (!de.requestFullscreen || document.fullscreenElement) return;
+  try { de.requestFullscreen({navigationUI:'hide'}).then(() => { try { screen.orientation.lock('landscape').catch(() => {}); } catch (_) {} }).catch(() => {}); } catch (_) {}
+}
+function setImmersive(on){
+  const b = document.body;
+  if (b.classList.contains('immersive') === on) return;
+  b.classList.toggle('immersive', on);
+  if (!on && document.fullscreenElement && document.exitFullscreen) document.exitFullscreen().catch(() => {});
+  tcRelease();
+  setTimeout(resize, 60); setTimeout(resize, 450);
+}
+/* parmak kalkınca ya da ekran değişince basılı kalan tuş kalmasın */
+function tcRelease(){
+  for (const k of tc.keys) keys.delete(k);
+  tc.keys.clear(); tc.stick = tc.aim = tc.dodge = tc.alt = null;
+  $('tc-base').style.display = 'none';
+  for (const b of document.querySelectorAll('.tc-btn')) b.classList.remove('on');
+}
+function tcKey(k, on){ if (on){ keys.add(k); tc.keys.add(k); } else { keys.delete(k); tc.keys.delete(k); } }
+/* nişan: parmağın kaydığı yöne, kaydırma uzunluğuyla artan mesafede */
+function aimFrom(dx, dy, maxD){
+  const p = S.p, L = Math.hypot(dx, dy), d = clamp(L * 4.5, 90, maxD || 460);
+  mouse.x = p.x + dx / L * d; mouse.y = (p.y - 30) + dy / L * d;
+}
+function aimAhead(d){ const p = S.p; mouse.x = p.x + p.face * (d || 300); mouse.y = p.y - 30; }
+/* basılı tutulan düğme: her parmak kendi düğmesine bağlı kalır */
+function hold(el, down, move, up){
+  let id = null;
+  el.addEventListener('pointerdown', ev => {
+    ev.preventDefault(); ev.stopPropagation();
+    if (id != null || S.mode !== 'play') return;
+    id = ev.pointerId; try { el.setPointerCapture(id); } catch (_) {}
+    el.classList.add('on'); down(ev);
+  });
+  el.addEventListener('pointermove', ev => { if (ev.pointerId === id && move) move(ev); });
+  const end = ev => { if (ev.pointerId !== id) return; id = null; el.classList.remove('on'); up(ev); };
+  el.addEventListener('pointerup', end); el.addEventListener('pointercancel', end);
+  el.addEventListener('contextmenu', ev => ev.preventDefault());
+}
+/* joystick */
+const tcZone = $('tc-zone'), tcBase = $('tc-base'), tcKnob = $('tc-knob');
+tcZone.addEventListener('pointerdown', ev => {
+  ev.preventDefault();
+  if (tc.stick || S.mode !== 'play') return;
+  const r = tcZone.getBoundingClientRect();
+  tc.stick = {id:ev.pointerId, x0:ev.clientX, y0:ev.clientY, dx:0, dy:0, down:false, up:false};
+  try { tcZone.setPointerCapture(ev.pointerId); } catch (_) {}
+  tcBase.style.display = 'block'; tcBase.style.left = (ev.clientX - r.left) + 'px'; tcBase.style.top = (ev.clientY - r.top) + 'px';
+  tcKnob.style.transform = 'translate(0,0)';
+});
+tcZone.addEventListener('pointermove', ev => {
+  const s = tc.stick; if (!s || ev.pointerId !== s.id) return;
+  let dx = ev.clientX - s.x0, dy = ev.clientY - s.y0;
+  const L = Math.hypot(dx, dy), R = 50;
+  if (L > R){ dx *= R / L; dy *= R / L; }
+  s.dx = dx; s.dy = dy;
+  tcKnob.style.transform = `translate(${dx}px,${dy}px)`;
+  /* aşağı: alt sıraya in. yukarı: zıpla */
+  if (dy > 32 && dy > Math.abs(dx) * .8){ if (!s.down){ s.down = true; pressed.add('down'); } } else if (dy < 18) s.down = false;
+  if (dy < -36 && -dy > Math.abs(dx) * .8){ if (!s.up){ s.up = true; pressed.add('jump'); tcKey('jump', true); } }
+  else if (dy > -22 && s.up){ s.up = false; tcKey('jump', false); }
+});
+const stickEnd = ev => {
+  const s = tc.stick; if (!s || ev.pointerId !== s.id) return;
+  tc.stick = null; tcBase.style.display = 'none';
+  tcKey('left', false); tcKey('right', false); if (s.up) tcKey('jump', false);
+};
+tcZone.addEventListener('pointerup', stickEnd); tcZone.addEventListener('pointercancel', stickEnd);
+/* saldır: yakın dövüşte basılı tut, menzillide sürükle bırak */
+hold($('tc-atk'), ev => {
+  const w = S.p.st.wd, manual = w.kind === 'bow' || w.kind === 'staff';
+  tc.aim = {x0:ev.clientX, y0:ev.clientY, dx:0, dy:0, moved:false, manual};
+  if (!manual){ aimAhead(120); pressed.add('attack'); tcKey('attack', true); }
+}, ev => {
+  const a = tc.aim; if (!a) return;
+  a.dx = ev.clientX - a.x0; a.dy = ev.clientY - a.y0;
+  if (Math.hypot(a.dx, a.dy) > 16) a.moved = true;
+}, () => {
+  const a = tc.aim; tc.aim = null; if (!a) return;
+  if (a.manual){ if (a.moved) aimFrom(a.dx, a.dy); else aimAhead(); pressed.add('attack'); }
+  else tcKey('attack', false);
+});
+hold($('tc-jump'), () => { pressed.add('jump'); tcKey('jump', true); }, null, () => tcKey('jump', false));
+/* dodge: büyücü setiyle sürükleyip ışınlanacağın yeri seçersin */
+hold($('tc-dodge'), ev => {
+  const blink = S.p.st.def.blink;
+  tc.dodge = {x0:ev.clientX, y0:ev.clientY, dx:0, dy:0, moved:false, blink};
+  if (!blink){ aimAhead(100); pressed.add('dodge'); }
+}, ev => {
+  const d = tc.dodge; if (!d) return;
+  d.dx = ev.clientX - d.x0; d.dy = ev.clientY - d.y0;
+  if (Math.hypot(d.dx, d.dy) > 16) d.moved = true;
+}, () => {
+  const d = tc.dodge; tc.dodge = null; if (!d || !d.blink) return;
+  const s = tc.stick, sx = s && Math.abs(s.dx) > 14 ? Math.sign(s.dx) : 0;
+  if (d.moved) aimFrom(d.dx, d.dy, S.p.st.def.range);
+  else { const p = S.p; mouse.x = p.x + (sx || p.face) * S.p.st.def.range; mouse.y = p.y - 30; }
+  pressed.add('dodge');
+});
+/* ikinci tuş: kalkan (basılı tut) ya da asa küresi (sürükle bırak) */
+hold($('tc-alt'), ev => {
+  const shield = S.p.st.wd.kind === 'shield';
+  tc.alt = {x0:ev.clientX, y0:ev.clientY, dx:0, dy:0, moved:false, shield};
+  if (shield){ aimAhead(100); pressed.add('alt'); tcKey('alt', true); }
+}, ev => {
+  const a = tc.alt; if (!a) return;
+  a.dx = ev.clientX - a.x0; a.dy = ev.clientY - a.y0;
+  if (Math.hypot(a.dx, a.dy) > 16) a.moved = true;
+  if (a.shield && Math.abs(a.dx) > 20){ const p = S.p; mouse.x = p.x + Math.sign(a.dx) * 100; }
+}, () => {
+  const a = tc.alt; tc.alt = null; if (!a) return;
+  if (a.shield) tcKey('alt', false);
+  else { if (a.moved) aimFrom(a.dx, a.dy, 360); else aimAhead(300); pressed.add('alt'); }
+});
+$('tc-menu').addEventListener('click', () => { if (S.mode !== 'play') return; if (S.net) tc.menu = true; else paused = true; tcRelease(); });
+$('tc-resume').addEventListener('click', () => { paused = false; tc.menu = false; });
+$('tc-retry').addEventListener('click', () => { tc.menu = false; requestRun(); });
+$('tc-next').addEventListener('click', () => {
+  const n = sel.s < 50 ? [sel.c, sel.s + 1] : [sel.c + 1, 1];
+  if (S.mode !== 'won' || n[0] > 10 || !unlocked(n[0], n[1])) return;
+  selectLevel(n[0], n[1]); requestRun();
+});
+$('tc-home').addEventListener('click', () => { tc.menu = false; toMenu(); });
+const DODGE_LBL = {normal:'Dodge', okcu:'Takla', suikastci:'Gölge', tank:'Hücum', buyucu:'Işınlan'};
+/* her kare: görünürlük, joystick tuşları, nişan çizgisi için imleç, dodge bekleme halkası */
+function tcTick(){
+  const imm = touchMode && S.mode !== 'title';
+  setImmersive(imm);
+  const playing = imm && S.mode === 'play' && !paused && !tc.menu;
+  const tEl = $('tc'), eEl = $('tc-end');
+  if (tEl.hidden === playing) tEl.hidden = !playing;
+  const showEnd = imm && !playing;
+  if (eEl.hidden === showEnd) eEl.hidden = !showEnd;
+  if (showEnd){
+    const guestLock = lobby.ch && lobby.others.length && lobby.role === 'guest';
+    const n = sel.s < 50 ? [sel.c, sel.s + 1] : [sel.c + 1, 1];
+    $('tc-resume').hidden = !(S.mode === 'play');
+    $('tc-retry').hidden = S.mode === 'play' || guestLock;
+    $('tc-next').hidden = !(S.mode === 'won' && !guestLock && n[0] <= 10 && unlocked(n[0], n[1]));
+  }
+  if (!playing){ if (tc.keys.size) tcRelease(); return; }
+  const p = S.p, st = p.st, s = tc.stick;
+  tcKey('left', !!s && s.dx < -14); tcKey('right', !!s && s.dx > 14);
+  /* yakın dövüş tuşu basılıyken vuruşlar baktığın yöne gider */
+  if (tc.aim && !tc.aim.manual) aimAhead(120);
+  const kind = st.wd.kind, altB = $('tc-alt');
+  const altOn = kind === 'shield' || kind === 'staff';
+  if (altB.hidden === altOn) altB.hidden = !altOn;
+  if (altOn){ const lbl = kind === 'shield' ? 'Kalkan' : 'Küre'; if (altB.dataset.l !== lbl){ altB.dataset.l = lbl; altB.querySelector('span').textContent = lbl; } }
+  const dB = $('tc-dodge'), dl = DODGE_LBL[st.setCls && st.def !== DEFENSE.normal ? st.setCls : 'normal'];
+  if (dB.dataset.l !== dl){ dB.dataset.l = dl; dB.querySelector('span').textContent = dl; }
+  dB.style.setProperty('--cd', String(clamp((S.t - p.dodgeT) / st.dodgeCd, 0, 1)));
+}
+/* nişan çizgisi: sürüklerken nereye atacağın görünür */
+function drawTouchAim(){
+  if (!touchMode || S.mode !== 'play') return;
+  const p = S.p, a = tc.aim && tc.aim.manual && tc.aim.moved ? tc.aim : tc.alt && !tc.alt.shield && tc.alt.moved ? tc.alt : tc.dodge && tc.dodge.blink && tc.dodge.moved ? tc.dodge : null;
+  if (!a) return;
+  const maxD = a === tc.dodge ? p.st.def.range : a === tc.alt ? 360 : 460;
+  const L = Math.hypot(a.dx, a.dy), d = clamp(L * 4.5, 90, maxD);
+  const x = p.x + a.dx / L * d, y = (p.y - 30) + a.dy / L * d;
+  dashedLine(p.x, p.y - 30, x, y, rgba(a === tc.dodge ? C.frost : C.ember, .75), 2);
+  ctx.strokeStyle = rgba(a === tc.dodge ? C.frost : C.ember, .8); ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.arc(x, y, 9, 0, Math.PI * 2); ctx.stroke();
+}
 
 /* ---------- oyun durumu ---------- */
 function makeBoss(L){
@@ -561,6 +740,7 @@ let S = makeState('title');
 let paused = false;
 /* co-op: lobide başkası varken bölümü lobi sahibi herkes için başlatır */
 function requestRun(){
+  goFull();
   if (lobby.ch && lobby.others.length){
     if (lobby.role === 'host') coopStart();
     else flash('Bölümü lobi sahibi başlatır.');
@@ -687,6 +867,7 @@ function hurtPlayer(o){
   p.hp -= dmg; p.hurtUntil = t + .8; p.stunUntil = t + .18; p.blocking = false;
   p.vx = (o.dir || 1) * 300; p.vy = -360; p.grounded = false;
   hitstop(.06, true); addShake(9); S.flashT = t;
+  if (touchMode && navigator.vibrate) try { navigator.vibrate(30); } catch (_) {}
   burst(p.x, p.y - 24, o.el ? elCol(o.el) : C.blood, 14, 260);
   text(p.x, p.y - 62, '-' + dmg, C.blood, 18);
   if (p.hp <= 0){ p.hp = 0; playerDown(); }
@@ -2974,9 +3155,11 @@ function drawHud(){
   if (st.weapon){
     const im = iconImg(st.weapon);
     if (im.complete && im.naturalWidth){
-      ctx.drawImage(im, W - 40 - 30, 491, 30, 30);
+      /* telefonda sağ alt köşe tuşların altında kalır, silah üstte gösterilir */
+      const wy = touchMode ? 58 : 491;
+      ctx.drawImage(im, W - 40 - 30, wy, 30, 30);
       ctx.textAlign = 'right'; ctx.font = `600 11px ${F_MONO}`; ctx.fillStyle = C.dust;
-      ctx.fillText(st.weapon.ad.toLocaleUpperCase('tr'), W - 40 - 38, 511);
+      ctx.fillText(st.weapon.ad.toLocaleUpperCase('tr'), W - 40 - 38, wy + 20);
     }
   }
   if (S.banner && S.mode === 'play'){
@@ -3029,29 +3212,29 @@ function drawOverlay(){
   if (S.mode === 'title'){
     centerLine(L.boss ? BOSSES[L.boss].ad : S.ch.ad, C.bone, `700 84px ${F_DISPLAY}`, 214);
     setSpacing(4); centerLine(sub, C.ember, `600 14px ${F_BODY}`, 254); setSpacing(0);
-    centerLine("Başlamak için tıkla ya da Enter'a bas", C.bone, `500 20px ${F_BODY}`, 314);
+    centerLine(touchMode ? 'Başlamak için dokun' : "Başlamak için tıkla ya da Enter'a bas", C.bone, `500 20px ${F_BODY}`, 314);
     const cls = st.wd.cls ? CLASSES[st.wd.cls].ad : 'Class yok';
     centerLine(`${cls} · ${st.weapon ? st.weapon.ad : 'Yumruk'} · can ${st.maxHp}`, C.dust, `400 16px ${F_BODY}`, 346);
     if (st.synced) centerLine(`${st.synced} eşyan ${sel.c}. bölüm gücüne senkronlandı`, C.frost, `500 15px ${F_BODY}`, 374);
     centerLine('Bölümü ve eşyaları sayfanın altından değiştirebilirsin', C.dust, `400 14px ${F_BODY}`, 430);
   } else if (S.mode === 'play' && paused){
     centerLine('Duraklatıldı', C.bone, `700 72px ${F_DISPLAY}`, 240);
-    centerLine("Devam etmek için oyun alanına tıkla ya da Esc'ye bas", C.dust, `500 18px ${F_BODY}`, 290);
-    centerLine("Ana ekrana dönmek için M'ye bas", C.dust, `500 16px ${F_BODY}`, 320);
+    centerLine(touchMode ? 'Devam etmek için Devam düğmesine dokun' : "Devam etmek için oyun alanına tıkla ya da Esc'ye bas", C.dust, `500 18px ${F_BODY}`, 290);
+    if (!touchMode) centerLine("Ana ekrana dönmek için M'ye bas", C.dust, `500 16px ${F_BODY}`, 320);
   } else if (S.mode === 'dead'){
     centerLine('Öldün', C.blood, `700 96px ${F_DISPLAY}`, 220);
     const info = e ? `${e.def.ad}: ${Math.max(0, Math.ceil(e.hp))} / ${e.max} can kaldı   ·   kaçtığın saldırı ${S.dodged}`
                    : `Dalga ${S.wave + 1} / ${L.waves.length}   ·   altın ${S.gold}   ·   kaçtığın saldırı ${S.dodged}`;
     centerLine(info, C.dust, `500 17px ${F_BODY}`, 270);
     if (lobby.ch && lobby.others.length) centerLine('Takımda ayakta kimse kalmadı', C.ember, `500 15px ${F_BODY}`, 296);
-    centerLine("Tekrar denemek için tıkla ya da R'ye bas", C.bone, `500 20px ${F_BODY}`, 322);
+    centerLine(touchMode ? 'Tekrar denemek için ekrana dokun' : "Tekrar denemek için tıkla ya da R'ye bas", C.bone, `500 20px ${F_BODY}`, 322);
     drawLootLine(372, 'Ölünce bir şey kaybetmezsin.');
-    centerLine('Eşyalarını değiştirmek için sayfanın altındaki envantere bak', C.dust, `400 14px ${F_BODY}`, 440);
+    if (!touchMode) centerLine('Eşyalarını değiştirmek için sayfanın altındaki envantere bak', C.dust, `400 14px ${F_BODY}`, 440);
   } else if (S.mode === 'won'){
     centerLine(e ? `${e.def.ad} düştü` : 'Bölüm temizlendi', C.ember, `700 76px ${F_DISPLAY}`, 220);
     centerLine(`${att[attKey()] || 0}. denemede   ·   +${S.gold} altın   ·   kalan can ${Math.ceil(p.hp)} / ${st.maxHp}`, C.dust, `500 17px ${F_BODY}`, 270);
     const nextOk = sel.s < 50 ? unlocked(sel.c, sel.s + 1) : sel.c < 10 && unlocked(sel.c + 1, 1);
-    const nextTxt = lobby.role === 'guest' ? "Sıradaki bölümü lobi sahibi seçer" : nextOk
+    const nextTxt = lobby.role === 'guest' ? "Sıradaki bölümü lobi sahibi seçer" : touchMode ? 'Aşağıdaki düğmelerle devam et' : nextOk
       ? (sel.s < 50 ? `Sıradaki bölüm için N'ye, tekrar için R'ye bas` : `${sel.c + 1}. bölüme geçmek için N'ye bas`)
       : (sel.c === 10 && sel.s === 50 ? 'Oyunun sonuna geldin' : "Tekrar için R'ye bas");
     centerLine(nextTxt, C.bone, `500 20px ${F_BODY}`, 322);
@@ -3074,7 +3257,7 @@ function render(now){
   drawGrenades();
   if (S.e && (S.e.hp > 0 || S.mode !== 'won')) drawBoss();
   drawPartner();
-  drawPlayer(); drawShots(); drawFx(); drawDrops();
+  drawPlayer(); drawShots(); drawFx(); drawDrops(); drawTouchAim();
   if (showBoxes) drawBoxes();
   ctx.restore();
   const fa = S.t - S.flashT;
@@ -3702,6 +3885,7 @@ function frame(now){
   if (S.shake > 0) S.shake = Math.max(0, S.shake - dt * 30);
   if (S.e) S.e.shown += (S.e.hp - S.e.shown) * Math.min(1, dt * 4);
   netTick(now);
+  tcTick();
   render(now);
   /* kare başına iş 11 ms'yi geçerse çözünürlüğü kademeli düşür, rahatlayınca geri yükselt */
   costSum += performance.now() - c0; costN++;

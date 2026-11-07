@@ -71,6 +71,41 @@ select{font:inherit;font-size:14px;color:var(--bone);background:var(--stone);bor
 .dim{color:var(--dust)}
 
 .stage{position:relative;width:100%;max-width:100%;aspect-ratio:16/9;background:var(--pit);border:1px solid var(--stone);border-radius:6px;overflow:hidden}
+button{touch-action:manipulation}
+[hidden]{display:none !important}
+/* telefonda oyun: tam ekran, yatay, dokunmatik kontroller */
+body.immersive{overflow:hidden;overscroll-behavior:none}
+body.immersive .stage{position:fixed;inset:0;z-index:60;width:100vw;height:100vh;height:100dvh;max-width:none;aspect-ratio:auto;border:0;border-radius:0;background:#000;display:flex;align-items:center;justify-content:center}
+body.immersive .stage canvas{width:min(100vw, 177.78vh);height:min(100vh, 56.25vw);width:min(100vw, 177.78dvh);height:min(100dvh, 56.25vw);cursor:default}
+.tc{position:absolute;inset:0;z-index:2;pointer-events:none;-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}
+.tc[hidden],.tc-end[hidden]{display:none}
+.tc > *{pointer-events:auto;touch-action:none}
+.tc-zone{position:absolute;left:0;top:18%;bottom:0;width:44%}
+.tc-base{position:absolute;display:none;width:116px;height:116px;margin:-58px 0 0 -58px;border-radius:50%;border:2px solid rgba(232,224,208,.28);background:rgba(232,224,208,.07)}
+.tc-knob{position:absolute;left:50%;top:50%;width:50px;height:50px;margin:-25px 0 0 -25px;border-radius:50%;background:rgba(232,224,208,.38)}
+.tc-btn{position:absolute;border-radius:50%;border:2px solid rgba(232,224,208,.32);background:rgba(24,20,31,.5);color:var(--bone);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1px;padding:0;font-size:11px;font-weight:600;line-height:1.1;-webkit-tap-highlight-color:transparent}
+.tc-btn svg{width:42%;height:auto}
+.tc-btn.on{background:rgba(232,120,60,.5);border-color:var(--ember)}
+.tc-btn:hover:not(:disabled){background:rgba(24,20,31,.5)}
+.tc-btn.on:hover:not(:disabled){background:rgba(232,120,60,.5)}
+.tc-atk{width:92px;height:92px;right:calc(16px + env(safe-area-inset-right));bottom:calc(18px + env(safe-area-inset-bottom))}
+.tc-jump{width:68px;height:68px;right:calc(124px + env(safe-area-inset-right));bottom:calc(14px + env(safe-area-inset-bottom))}
+.tc-dodge{width:68px;height:68px;right:calc(28px + env(safe-area-inset-right));bottom:calc(126px + env(safe-area-inset-bottom));background:conic-gradient(rgba(140,200,230,.35) calc(var(--cd,1) * 360deg), rgba(24,20,31,.5) 0)}
+.tc-dodge:hover:not(:disabled){background:conic-gradient(rgba(140,200,230,.35) calc(var(--cd,1) * 360deg), rgba(24,20,31,.5) 0)}
+.tc-alt{width:58px;height:58px;right:calc(116px + env(safe-area-inset-right));bottom:calc(102px + env(safe-area-inset-bottom))}
+.tc-alt[hidden]{display:none}
+.tc-menu{position:absolute;top:calc(8px + env(safe-area-inset-top));right:calc(12px + env(safe-area-inset-right));width:42px;height:42px;padding:9px;border-radius:8px;background:rgba(24,20,31,.55);border:1px solid rgba(232,224,208,.3);color:var(--bone)}
+.tc-menu svg{width:100%;height:100%}
+.tc-end{position:absolute;left:0;right:0;bottom:calc(14px + env(safe-area-inset-bottom));z-index:3;display:flex;flex-wrap:wrap;justify-content:center;gap:10px;padding:0 16px}
+.tc-end button{min-height:46px;padding:0 20px;font-size:16px}
+.tc-end button[hidden]{display:none}
+.tc-rotate{display:none}
+@media (orientation:portrait){
+  body.immersive .tc-rotate{position:absolute;inset:0;z-index:5;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;padding:24px;text-align:center;background:rgba(14,11,18,.94);color:var(--bone)}
+  body.immersive .tc-rotate svg{width:72px;height:72px;color:var(--ember)}
+  body.immersive .tc-rotate b{font-size:20px}
+  body.immersive .tc-rotate span{color:var(--dust);font-size:14px;max-width:30ch}
+}
 canvas{display:block;width:100%;height:100%;outline:none;cursor:crosshair;touch-action:none}
 canvas:focus-visible{box-shadow:inset 0 0 0 2px var(--ember)}
 
@@ -272,6 +307,25 @@ tr.empty td{font-family:var(--body);font-weight:400;color:var(--dust);white-spac
 
   <div class="stage">
     <canvas id="game" tabindex="0" aria-label="Prolar oyun alanı. Başlamak için tıkla ya da Enter'a bas."></canvas>
+    <div class="tc" id="tc" hidden>
+      <div class="tc-zone" id="tc-zone"><div class="tc-base" id="tc-base"><div class="tc-knob" id="tc-knob"></div></div></div>
+      <button type="button" class="tc-btn tc-atk" id="tc-atk" aria-label="Saldır"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 19l9-9m-2-5l7-2-2 7-6 6-3-3z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/></svg><span>Saldır</span></button>
+      <button type="button" class="tc-btn tc-jump" id="tc-jump" aria-label="Zıpla"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V6m-6 6l6-6 6 6" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg><span>Zıpla</span></button>
+      <button type="button" class="tc-btn tc-dodge" id="tc-dodge" aria-label="Dodge"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12h12m-4-5l5 5-5 5M4 8h5M4 16h5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg><span>Dodge</span></button>
+      <button type="button" class="tc-btn tc-alt" id="tc-alt" aria-label="İkinci tuş" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l7 3v5c0 5-3 8-7 10-4-2-7-5-7-10V6z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg><span>Kalkan</span></button>
+      <button type="button" class="tc-menu" id="tc-menu" aria-label="Menü"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14M16 5v14" stroke="currentColor" stroke-width="3" stroke-linecap="round"/></svg></button>
+    </div>
+    <div class="tc-end" id="tc-end" hidden>
+      <button type="button" id="tc-resume" class="primary">Devam</button>
+      <button type="button" id="tc-retry" class="primary">Tekrar</button>
+      <button type="button" id="tc-next" class="primary">Sıradaki bölüm</button>
+      <button type="button" id="tc-home">Ana ekran</button>
+    </div>
+    <div class="tc-rotate" id="tc-rotate" aria-hidden="true">
+      <svg viewBox="0 0 48 48" aria-hidden="true"><rect x="16" y="6" width="16" height="28" rx="3" fill="none" stroke="currentColor" stroke-width="2.5"/><path d="M8 30a16 16 0 0 0 16 12m0 0l-4-4m4 4l-4 3" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <b>Telefonu yan çevir</b>
+      <span>Oyun yatay oynanır. iPhone'da Denetim Merkezi'ndeki dikey yön kilidini kapat.</span>
+    </div>
   </div>
 
   <section class="lobby" id="lobby" aria-labelledby="h-lobby">
@@ -355,6 +409,17 @@ tr.empty td{font-family:var(--body);font-weight:400;color:var(--dust);white-spac
         <dt><kbd>N</kbd></dt><dd>Kazandıktan sonra sıradaki bölüm</dd>
         <dt><kbd>Esc</kbd><kbd>M</kbd></dt><dd>Duraklat, ana ekrana dön</dd>
       </dl>
+      <details>
+        <summary>Telefonda</summary>
+        <ul>
+          <li>Telefonu yan çevir. Bölüme başlayınca oyun tam ekran açılır.</li>
+          <li>Sol yarıda parmağını kaydır: sağa sola koşarsın, aşağı çekince alt sıraya inersin, yukarı itince zıplarsın.</li>
+          <li><b>Saldır</b>: yakın dövüşte basılı tut. Okçu ve büyücü düğmeyi sürükleyip bırakınca o yöne atar, ya da ekranda dokunduğun yere atar.</li>
+          <li><b>Dodge</b>: kaçış. Büyücü setiyle düğmeyi sürükleyip ışınlanacağın yeri seçersin. Düğmenin etrafındaki halka dolunca tekrar kullanılır.</li>
+          <li><b>Kalkan</b> ya da <b>Küre</b>: tankta basılı tut, büyücüde sürükleyip bırak.</li>
+          <li>Sağ üstteki düğme menüyü açar. En rahatı siteyi ana ekrana ekleyip oradan açmak.</li>
+        </ul>
+      </details>
       <details open>
         <summary>Class'lar</summary>
         <ul>
@@ -440,6 +505,6 @@ tr.empty td{font-family:var(--body);font-weight:400;color:var(--dust);white-spac
 <script src="js/data.js?v=1c074905"></script>
 <script src="js/net.js?v=1b14307c"></script>
 <script src="js/icons.js?v=b4736e1e"></script>
-<script src="js/game.js?v=c625d467"></script>
+<script src="js/game.js?v=f0f42cb2"></script>
 </body>
 </html>
