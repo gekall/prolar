@@ -1,6 +1,6 @@
 # Prolar
 
-Arkadaşlarla online oynanan 2D platform hack and slash oyunu. 10 bölüm, her birinde 50 alt bölüm. Her 25. alt bölümde mini boss, 50.'de boss var.
+Arkadaşlarla online oynanan 2D platform hack and slash oyunu. 10 bölüm, her birinde 50 alt bölüm. 15, 30 ve 45. alt bölümlerde boss, 50.'de boss ordusuyla birlikte gelir.
 
 **Site:** https://gekall.github.io/prolar/
 
@@ -10,7 +10,10 @@ Arkadaşlarla online oynanan 2D platform hack and slash oyunu. 10 bölüm, her b
 - Envanter sınırsızdır, aynı eşyadan birden fazla tutulabilir. Satılan eşya altın olarak hesaba geçer.
 - Market her saat başı kendiliğinden yenilenir, altınla da yenilenebilir.
 - Online lobi: biri lobi kurar, diğerleri 5 haneli kodla katılır. Lobi hiçbir yere kaydedilmez, herkes çıkınca kapanır. En fazla 4 kişi. Bölümü lobi sahibi seçer.
+- Lobide herkes aynı düşmanlarla dövüşür. Düşmanları lobi sahibinin oyunu yönetir; vuruşların ona gider, düşman ölünce herkeste ölür. Bir saldırının sana değip değmediğine kendi ekranında bakılır, dodge zamanlaması gördüğüne göredir.
+- Oyun verisi tarayıcılar arasında doğrudan (WebRTC) gider, Supabase sadece bağlantıyı kurar. Doğrudan bağlantı kurulamazsa veri Supabase üzerinden daha yavaş gider.
 - Lobide biri düşerse 5 saniye sonra yeniden doğar. Takımda ayakta kimse kalmazsa bölüm kaybedilir. Tek başına oynarken ölünce bölüm biter.
+- Herkesin dodge'u aynıdır. Aynı class'tan 4 zırh parçası kuşanınca dodge class yeteneğine dönüşür: büyücü ışınlanır, okçu geri takla atar (sonraki ok ×2), suikastçı düşmanın arkasına geçer (sonraki vuruş kritik), tank kalkanla hücum eder (mobları sersemletir).
 
 ## Ganimet oranları
 
@@ -48,18 +51,32 @@ Her bölümün kendi yaratıkları var (iskelet, golem, böcek, solucan, yarasa,
 | Hücumcu | Ayak sürter, duvara kadar koşar | Üstünden zıpla ya da sıra değiştir, duvara çarpınca sersemler ve ×1,5 hasar alır |
 | Bombacı | Bomba fırlatır, düştüğü yer işaretlenir | Kırmızı halkadan çık |
 
-İlk 3 tür her bölümde baştan var. Diğerleri bölüm ilerledikçe sırayla eklenir: 1. bölümde uçanlar 1-4'te, şifacılar 1-18'de gelir. İleri bölümlerde hepsi erkenden çıkar ve özel türlerin oranı alt bölüm numarasıyla artar.
+İlk 3 tür her bölümde baştan var. Diğerleri bölüm ilerledikçe sırayla eklenir: 1. bölümde uçanlar 1-3'te, şifacılar 1-12'de gelir. İleri bölümlerde hepsi erkenden çıkar ve özel türlerin oranı alt bölüm numarasıyla artar.
+
+Alt bölüm ilerledikçe bazı düşmanlar farklı saldırır: üçlü atan okçular, zıplayıp şok dalgası yollayan tanklar, iki kez atılan koşucular, ateş eden uçanlar, duvardan sekip geri koşan hücumcular, üç bomba atan bombacılar.
+
+Platformlar: kırılan (üstünde durunca çöker, 3 sn sonra geri gelir), hareketli (yana kayar, seni taşır), buzlu (2. bölüm, kayarsın). 10 farklı arena düzeni var.
 
 ## Fiyatlar
 
 | Eşya | 1. bölüm | Sonraki her bölüm |
 |---|---|---|
-| Zırh | 210 | ×1,45 |
-| Takı | 250 | ×1,45 |
-| Silah | 300 | ×1,45 |
+| Zırh | 300 | ×1,45 |
+| Takı | 360 | ×1,45 |
+| Silah | 450 | ×1,45 |
 | Nadir eşya | 3 katı | |
 
-Satış fiyatı alış fiyatının %30'u. Marketi altınla yenilemek 1. bölümde 40 altın.
+Satış fiyatı alış fiyatının %30'u. Marketi altınla yenilemek 1. bölümde 60 altın.
+
+## Silahlar
+
+| Silah | Özellik |
+|---|---|
+| Av Yayı | Tek hedef, menzil 430 |
+| Patlayan Ok Yayı | Alan hasarı, menzil 400, menzil sonunda patlar |
+| Delici Yay | Düşmanlardan geçer, her delişte hasar %35 düşer, menzil 560 |
+| Hançer | %20 kritik (×1,75), arkadan ×2; suikastçı zırhının her parçası +%3 kritik |
+| Ayaz Asası | Yavaşlatır, menzil 460 |
 
 ## Kurulum
 

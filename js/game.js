@@ -515,7 +515,7 @@ window.addEventListener('keydown', ev => {
   keys.add(a);
 });
 window.addEventListener('keyup', ev => { const a = MAP[ev.code]; if (a) keys.delete(a); });
-function pauseIfPlaying(){ if (S.mode === 'play') paused = true; keys.clear(); }
+function pauseIfPlaying(){ if (S.mode === 'play' && !S.net) paused = true; keys.clear(); }
 window.addEventListener('blur', pauseIfPlaying);
 cv.addEventListener('blur', pauseIfPlaying);
 function toGame(ev){ const r = cv.getBoundingClientRect(); mouse.x = (ev.clientX - r.left) / r.width * W; mouse.y = (ev.clientY - r.top) / r.height * H; }
@@ -523,7 +523,7 @@ cv.addEventListener('pointermove', toGame);
 cv.addEventListener('pointerdown', ev => {
   ev.preventDefault(); cv.focus(); toGame(ev);
   try { cv.setPointerCapture(ev.pointerId); } catch(_) {}
-  if (S.mode !== 'play'){ if (ev.button === 0) newRun(); return; }
+  if (S.mode !== 'play'){ if (ev.button === 0) requestRun(); return; }
   if (paused){ paused = false; return; }
   if (ev.button === 0){ pressed.add('attack'); keys.add('attack'); }
   if (ev.button === 2){ pressed.add('alt'); keys.add('alt'); }
@@ -559,9 +559,24 @@ function makeState(mode){
 }
 let S = makeState('title');
 let paused = false;
-function newRun(){
+/* co-op: lobide başkası varken bölümü lobi sahibi herkes için başlatır */
+function requestRun(){
+  if (lobby.ch && lobby.others.length){
+    if (lobby.role === 'host') coopStart();
+    else flash('Bölümü lobi sahibi başlatır.');
+    return;
+  }
+  newRun();
+}
+function newRun(opts){
   const k = attKey(); att[k] = (att[k] || 0) + 1; store.set('prolar.att3', att);
   S = makeState('play'); paused = false; keys.clear(); pressed.clear();
+  S.net = opts && opts.coop ? {host:lobby.role === 'host', rid:opts.rid, evq:[], hits:[], snaps:[], evin:[], off:null, lastRx:performance.now(), dead:new Set()} : null;
+  if (S.net){
+    /* co-op: oyuncular üst üste doğmasın, lobiye giriş sırasına göre yan yana */
+    const order = lobby.peers.slice().sort((x, y) => x.at - y.at).map(q => q.nick), i = Math.max(0, order.indexOf(acct.name));
+    S.p.x = clamp(S.p.x + [0, -70, 70, -140][i % 4], WALL + 20, W - WALL - 20);
+  }
   if (S.L.waves) spawnWave(0);
   if (S.L.boss) S.banner = {txt:BOSSES[S.L.boss].ad, t:0, sub:S.L.waves ? 'Son dövüş: boss ve ordusu birlikte' : null};
   syncUI();
@@ -607,6 +622,7 @@ function dodgedFx(perfect){
 /* ---------- oyuncuya hasar ---------- */
 function stunTarget(who, dur){
   if (!who || who.hp <= 0) return;
+  if (S.net && !S.net.host){ S.net.hits.push({id:who.isBoss ? 'B' : who.id, stunOnly:dur}); text(who.x, who.y - who.h - 14, 'SENDELEDİ', C.ember, 16); return; }
   if (who.isBoss){
     if (['lunge','charge','slam','rowStrike'].includes(who.state) || who.state.endsWith('Wind')){
       who.vx = 0; who.state = 'recover'; who.st = who.ck; who.dur = .9; who.held = true;
@@ -624,7 +640,7 @@ function mates(){
 }
 function playerDown(){
   const p = S.p;
-  if (!mates().some(ps => !ps.dn)){ endRun(false); return; }
+  if (!(S.net && !S.net.host) && !mates().some(ps => !ps.dn)){ endRun(false); return; }
   p.dead = true; p.respawnAt = S.t + RESPAWN; p.vx = 0; p.vy = 0; p.blocking = false;
   S.downs = (S.downs || 0) + 1;
   burst(p.x, p.y - 24, C.blood, 26, 300); addShake(6);
@@ -632,7 +648,7 @@ function playerDown(){
 }
 function updDowned(){
   const p = S.p, ms = mates();
-  if (ms.length && ms.every(ps => ps.dn)){ endRun(false); return; }
+  if (!(S.net && !S.net.host) && ms.length && ms.every(ps => ps.dn)){ endRun(false); return; }
   if (S.t < p.respawnAt) return;
   /* düşmanlardan en uzak noktada doğ */
   const foes = enemies();
@@ -682,12 +698,15 @@ function damageEnemy(t, base, el, o){
   o = o || {};
   if (t.dead || t.hp <= 0) return false;
   if (!t.isBoss && (t.state === 'spawn' || !targetable(t))) return false;
-  const p = S.p;
+  const p = S.p, guest = S.net && !S.net.host && !o.remote;
   const fromX = o.fromX == null ? p.x : o.fromX;
+  if (guest && !o.tick) S.net.hits.push({id:t.isBoss ? 'B' : t.id, b:Math.round(base * 100) / 100, el,
+    o:{melee:o.melee ? 1 : 0, blockable:o.blockable === false ? false : true, backstab:o.backstab ? 1 : 0, poison:o.poison || 0, stun:o.stun || 0, slow:o.slow || 0,
+       crit:o.crit ? 1 : 0, power:o.power ? 1 : 0, kbx:o.kbx || 0, spread:o.spread ? 1 : 0, fromX:Math.round(fromX), ax:Math.round(p.x), bs:p.st.backstab}});
   if (!t.isBoss && t.a === 'tank' && t.state !== 'open' && o.blockable !== false && !o.tick && Math.sign(fromX - t.x) === t.face){
     text(t.x + t.face * 20, t.y - t.h - 6, 'BLOK', C.frost, 14);
     burst(t.x + t.face * 20, t.y - 30, C.frost, 6, 160);
-    if (o.melee){ hitstop(.02); p.vx = t.face * 240; }
+    if (o.melee && !o.remote){ hitstop(.02); p.vx = t.face * 240; }
     return false;
   }
   let dmg = base, tag = '';
@@ -695,15 +714,24 @@ function damageEnemy(t, base, el, o){
   if (o.crit || o.power) tag = 'crit';
   if (el && t.weak && el === t.weak){ dmg *= 1.5; tag = 'weak'; }
   else if (el && t.el && el === t.el){ dmg *= .5; tag = 'res'; }
-  if (o.backstab && Math.sign(p.x - t.x) !== t.face){ dmg *= p.st.backstab; tag = 'back'; }
+  if (o.backstab && Math.sign((o.ax ?? p.x) - t.x) !== t.face){ dmg *= o.bs ?? p.st.backstab; tag = 'back'; }
   const armored = !t.isBoss && t.aff.includes('zirhli') && t.hp > t.max * .6;
   if (armored) dmg *= .5;
   dmg = Math.max(1, Math.round(dmg));
+  if (guest){
+    /* misafir: hasarı tahmin edip gösterir, gerçek can lobi sahibinden gelir */
+    t.hp = Math.max(1, t.hp - dmg); t.predUntil = performance.now() + 450; t.flash = .07;
+    if (o.melee) hitstop(o.crit ? .03 : .02); addShake(o.melee ? 2 : 1);
+    burst(t.x, t.y - t.h / 2, el ? elCol(el) : C.bone, 6, 180);
+    text(t.x + rand(-10, 10), t.y - t.h - 12, String(dmg) + (tag === 'weak' ? '!' : ''), tag === 'res' ? C.dust : tag ? C.ember : C.bone, tag ? 17 : 15);
+    if (o.crit) text(t.x, t.y - t.h - 30, 'KRİTİK', C.ember, 13);
+    return true;
+  }
   t.hp -= dmg; t.lastHitT = S.t;
   if (armored && t.hp <= t.max * .6 && t.hp > 0) text(t.x, t.y - t.h - 30, 'ZIRH KIRILDI', AFFIX.zirhli.col, 13);
   if (!o.tick){
     t.flash = .07;
-    if (o.melee) hitstop(o.crit ? .03 : .02); addShake(o.melee ? 2 : 1);
+    if (o.melee && !o.remote) hitstop(o.crit ? .03 : .02); addShake(o.remote ? 0 : o.melee ? 2 : 1);
     burst(t.x, t.y - t.h / 2, el ? elCol(el) : C.bone, 6, 180);
   }
   const col = tag === 'weak' || tag === 'back' || tag === 'crit' ? C.ember : tag === 'res' ? C.dust : (o.tick ? elCol('zehir') : C.bone);
@@ -713,7 +741,10 @@ function damageEnemy(t, base, el, o){
   else if (o.power) text(t.x, t.y - t.h - 30, 'GÜÇLÜ OK', C.ember, 13);
   if (o.stun){ if (t.isBoss) text(t.x, t.y - t.h - 30, 'BAĞIŞIK', C.dust, 13); else t.stunUntil = S.t + o.stun; }
   if (o.slow) t.slowUntil = S.t + o.slow;
-  if (o.poison){ t.poisonUntil = S.t + 3; t.poisonDps = o.poison; }
+  if (o.poison){
+    t.poisonUntil = S.t + 3; t.poisonDps = o.poison;
+    if (o.spread) for (const q of enemies()) if (q !== t && Math.abs(q.x - t.x) < 70 && Math.abs(q.y - t.y) < 60){ q.poisonUntil = S.t + 3; q.poisonDps = o.poison; }
+  }
   if (!t.isBoss && !o.tick && !NO_STAGGER_A.has(t.a) && !NO_STAGGER_S.has(t.state)){
     t.kb = Math.sign(t.x - fromX || 1) * (o.melee ? 220 : 120);
     if (t.a === 'flyer') t.kb *= .6;
@@ -732,6 +763,7 @@ function damageEnemy(t, base, el, o){
 function kill(t){
   t.hp = 0;
   if (t.isBoss){
+    netEv('bkill', {});
     const g = Math.round(50 * TF(S.L.c) * (S.L.kind === 'boss' ? 2 : 1)); addGold(g);
     text(t.x, t.y - t.h - 30, `+${g} altın`, C.ember, 18);
     burst(t.x, t.y - 30, C.ember, 40, 380);
@@ -741,10 +773,11 @@ function kill(t){
     return;
   }
   t.dead = true; S.kills++; prof.kills = (prof.kills || 0) + 1;
+  netEv('kill', {id:t.id});
   const g = Math.round(ARCH[t.a].gold * TF(S.L.c) * (t.aff.length ? 2 : 1)); addGold(g);
   text(t.x, t.y - t.h - 26, `+${g} altın`, C.ember, 15);
   burst(t.x, t.y - t.h / 2, t.pal.mob, 18, 260);
-  if (t.aff.includes('patlayan')) S.bombs.push({x:t.x, y:t.y, at:S.t + .8, r:90, dmg:t.dmg * 1.5, el:t.el});
+  if (t.aff.includes('patlayan') && !(S.net && !S.net.host)){ const b = {x:t.x, y:t.y, at:S.t + .8, r:90, dmg:t.dmg * 1.5, el:t.el}; S.bombs.push(b); netBomb(b); }
   rollMobLoot(t);
 }
 /* ---------- ganimet ---------- */
@@ -781,6 +814,7 @@ function lootBoss(e){
 }
 function endRun(won){
   if (S.mode !== 'play') return;
+  netEv('end', {won:won ? 1 : 0});
   S.mode = won ? 'won' : 'dead';
   const key = attKey();
   if (won){
@@ -973,11 +1007,8 @@ function updPlayer(dt){
         if (e.hitBy === p.atkId || !ov(box, tRect(e))) continue;
         e.hitBy = p.atkId;
         const crit = rollCrit();
-        const hit = damageEnemy(e, st.dmg * (crit ? st.critMul : 1), st.wEl, {melee:true, blockable:w.kind !== 'hammer', backstab:w.kind === 'dagger',
-          poison:w.fx === 'poison' ? st.dmg * .6 : 0, crit});
-        if (hit && w.fx === 'poison'){
-          for (const o of enemies()) if (o !== e && Math.abs(o.x - e.x) < 70 && Math.abs(o.y - e.y) < 60){ o.poisonUntil = S.t + 3; o.poisonDps = st.dmg * .6; }
-        }
+        damageEnemy(e, st.dmg * (crit ? st.critMul : 1), st.wEl, {melee:true, blockable:w.kind !== 'hammer', backstab:w.kind === 'dagger',
+          poison:w.fx === 'poison' ? st.dmg * .6 : 0, spread:w.fx === 'poison', crit});
       }
     }
   }
@@ -1009,7 +1040,7 @@ function bossTarget(e){
 }
 
 /* ---------- boss yapay zekâsı ---------- */
-function setState(s, dur){ const e = S.e; e.state = s; e.st = e.ck; e.dur = dur; }
+function setState(s, dur){ const e = S.e; e.state = s; e.st = e.ck; e.dur = dur; e.sn = (e.sn || 0) + 1; }
 const idleTime = () => S.e.phase === 2 ? rand(.4, .65) : rand(.6, .95);
 const bossProjSpeed = kind => set.speed * (SHOT[kind] ? SHOT[kind].speed : 1);
 function aimAt(hx, hy, speed, lead){
@@ -1065,6 +1096,7 @@ function decide(){
 }
 function bossShot(kind, x, y, ang, speed, dmg, en){
   const sh = SHOT[kind];
+  netShot(kind, x, y, ang, speed, dmg, S.e.el);
   S.shots.push({kind, len:sh.len || 0, tip:(sh.len || 0) * (sh.tipF || 0), gap:sh.gap || 0, r:sh.r || 0,
     x, y, vx:Math.cos(ang) * speed, vy:Math.sin(ang) * speed, ang, stuck:false, life:0, res:null, dead:false,
     en:en || null, dmg, el:S.e.el, who:null});
@@ -1165,6 +1197,7 @@ function updBoss(dt){
         e.vx = 0; addShake(7); dust(e.x, e.y, 14, 0);
         const q = D('quake');
         S.quakes.push({x:e.x - 22, dir:-1, done:false, dmg:q, el:e.el}, {x:e.x + 22, dir:1, done:false, dmg:q, el:e.el});
+        netEv('quake', {x:Math.round(e.x), dmg:q, el:e.el});
         setState('recover', .55);
       }
       break;
@@ -1201,6 +1234,7 @@ function updBoss(dt){
       if (el >= e.dur){
         addShake(9); dust(e.x, e.y, 18, 0); burst(e.x, e.y - 6, rgba(C.ember, 1), 0, 0);
         const rad = 160 + e.w / 2;
+        netEv('slam', {x:Math.round(e.x), r:rad, dmg:D('slam'), el:e.el});
         if (Math.abs(p.x - e.x) < rad && rowOf(p.y) === 1){
           const r = hurtPlayer({dmg:D('slam'), el:e.el, dir:Math.sign(p.x - e.x) || 1, fromX:e.x, who:e});
           if (r === 'dodged') dodgedFx(t - p.dodgeT < .1);
@@ -1216,7 +1250,8 @@ function updBoss(dt){
         const n = P2 ? 7 : 5, gap = P2 ? 70 : 85, x0 = tg.x - gap * (n - 1) / 2 + rand(-20, 20);
         for (let i = 0; i < n; i++){
           const x = clamp(x0 + i * gap, WALL + 20, W - WALL - 20), y = surfaceBelow(x, tg.y - 1), lead = .85 + i * .09;
-          S.bombs.push({x, y:y + 20, at:t + lead, lead, r:44, dmg:D('rain'), el:e.el, col:e.el ? elCol(e.el) : e.pal.light, rain:true});
+          const b = {x, y:y + 20, at:t + lead, lead, r:44, dmg:D('rain'), el:e.el, col:e.el ? elCol(e.el) : e.pal.light, rain:true};
+          S.bombs.push(b); netBomb(b);
         }
         setState('rainCast', .9);
       }
@@ -1259,10 +1294,14 @@ function bossThrow(){
 }
 
 /* ---------- moblar ---------- */
-function mset(m, s, dur){ m.state = s; m.st = m.ck; m.dur = dur; }
+function mset(m, s, dur){ m.state = s; m.st = m.ck; m.dur = dur; m.sn = (m.sn || 0) + 1; }
 let mobSeq = 0;
 /* co-op olayları: lobi sahibi diğerlerine gönderir (tek başına oynarken bir şey yapmaz) */
-let netEv = () => {};
+function netEv(k, d){ if (S.net && S.net.host) S.net.evq.push([k, d, Math.round(S.t * 1000) / 1000]); }
+function netShot(kind, x, y, ang, speed, dmg, el){
+  if (S.net && S.net.host) netEv('shot', {k:kind, x:Math.round(x), y:Math.round(y), a:Math.round(ang * 1000) / 1000, s:Math.round(speed), d:dmg, el});
+}
+function netBomb(b){ if (S.net && S.net.host) netEv('bomb', {x:Math.round(b.x), y:Math.round(b.y), in:Math.round((b.at - S.t) * 1000) / 1000, lead:b.lead, r:b.r, dmg:b.dmg, el:b.el, col:b.col, rain:b.rain ? 1 : 0}); }
 function spawnMob(d){
   const L = S.L, A = ARCH[d.a], och = CHAPTERS[(d.origin || L.c) - 1];
   let home;
@@ -1281,22 +1320,25 @@ function spawnMob(d){
     pal:och.pal, name:och.mobs ? och.mobs[d.a] : d.a, proj:och.proj, aff:d.aff || [],
     tempo:Math.min(1.45, 1.05 + .03 * (L.c - 1) + .18 * (L.s / 50)), spd:1 + .02 * (L.c - 1) + .08 * (L.s / 50),
     stunUntil:-9, slowUntil:-9, poisonUntil:-9, poisonDps:0, poisonTick:0, lastHitT:-9, invisUntil:-9, enraged:false, lowFired:false,
-    body:(och.bodies && och.bodies[d.a]) || 'skel', seed:Math.random() * 6.28, v:d.v || 0, combo:0, id:d.id || ++mobSeq};
+    body:(och.bodies && och.bodies[d.a]) || 'skel', seed:Math.random() * 6.28, v:d.v || 0, combo:0, id:d.id || ++mobSeq, origin:d.origin || L.c};
   const so = SIZE_OVR[d.a + ':' + m.body]; if (so){ m.w = so[0]; m.h = so[1]; }
   if (d.a === 'flyer'){ m.hoverY = rand(190, 330); m.y = m.hoverY; }
   if (d.a === 'burrower'){ m.state = 'under'; m.cd = rand(.6, 1.2); }
   S.mobs.push(m);
   dust(x, home.y, 8, 0);
+  netEv('sp', {id:m.id, a:m.a, x:Math.round(m.x), home:d.home, o:d.origin || L.c, aff:m.aff, v:m.v});
   return m;
 }
 function spawnWave(i){
   for (const d of S.L.waves[i].mobs) spawnMob(d);
   S.wave = i; S.waveT = 0;
   if (!S.e || i > 0) S.banner = {txt:`Dalga ${i + 1} / ${S.L.waves.length}`, t:S.t, sub:FORMS[S.L.waves[i].form]};
+  netEv('wave', {i});
 }
 function mobShoot(m, off){
   const bx = m.x + m.face * 12, by = m.y - (m.a === 'flyer' ? m.h / 2 : 30), kind = m.proj, sh = SHOT[kind], sp = MOB_SHOT_SPEED[kind];
   const ang = Math.atan2(m.aimY - by, m.aimX - bx) + (off || 0);
+  netShot(kind, bx, by, ang, sp, m.dmg, m.el);
   S.shots.push({kind, len:sh.len || 0, tip:(sh.len || 0) * (sh.tipF || 0), gap:sh.gap || 0, r:sh.r || 0,
     x:bx, y:by, vx:Math.cos(ang) * sp, vy:Math.sin(ang) * sp, ang, stuck:false, life:0, res:null, dead:false,
     en:null, dmg:m.dmg, el:m.el, who:m});
@@ -1448,6 +1490,7 @@ function updMob(m, dt){
           const cx = m.x, cy = m.y - m.h / 2;
           S.booms.push({x:cx, y:cy, r:85, t:S.t, col:AFFIX.patlayan.col}); addShake(6);
           boomHit(cx, cy, 85, m.dmg, m.el);
+          netEv('boom', {x:Math.round(cx), y:Math.round(cy), r:85, dmg:m.dmg, el:m.el});
           burst(cx, cy, AFFIX.patlayan.col, 24, 300);
           m.dead = true; m.selfDestruct = true;
         }
@@ -1744,9 +1787,12 @@ function step(dt){
   updPlats(dt);
   if (S.p.dead) updDowned(); else updPlayer(dt);
   if (S.mode === 'play'){
-    if (S.e && S.e.hp > 0) updBoss(dt);
-    if (S.mode === 'play') updMobs(dt);
-    if (S.mode === 'play') updLevel(dt);
+    if (S.net && !S.net.host) guestWorld(dt);
+    else {
+      if (S.e && S.e.hp > 0) updBoss(dt);
+      if (S.mode === 'play') updMobs(dt);
+      if (S.mode === 'play') updLevel(dt);
+    }
   }
   if (S.mode === 'play'){ updShots(dt); updPShots(dt); updQuakes(dt); updBombs(); updGrenades(); updTraps(); }
   updFx(dt);
@@ -3202,10 +3248,10 @@ async function boot(){
   catch (e){ msg.textContent = /oturum/i.test(e.message || '') ? 'Oturumun kapanmış, tekrar giriş yap.' : cleanErr(e); }
 }
 
-/* ===================== ONLINE LOBİ (hazırlık) =====================
+/* ===================== ONLINE LOBİ =====================
    Lobi sahibi 5 haneli bir kod alır, arkadaşları o kodla katılır. En fazla 4 kişi.
    Bölümü lobi sahibi seçer, ilerleme onun hesabına yazılır. Misafir altın ve eşya kazanır.
-   Şimdilik oyuncular birbirinin hareketini ve canını görür. Düşmanlar henüz her ekranda ayrı hesaplanıyor. */
+   Herkes aynı düşmanlarla dövüşür (aşağıda CO-OP bölümü). */
 const LOBBY_MAX = 4;
 const PARTNER_COLS = ['#9fd8c8', '#e3a6d6', '#d9c77a'];
 const partnerCol = nick => { const i = lobby.others.findIndex(o => o.nick === nick); return PARTNER_COLS[(i < 0 ? 0 : i) % PARTNER_COLS.length]; };
@@ -3227,11 +3273,9 @@ function lobbyJoin(code, role){
   Object.assign(lobby, {ch, code, role, peers:[], others:[], ping:null, ready:false, pstates:{}, msg:'Bağlanıyor…', joinedAt:Date.now(), subscribed:false});
   ch.on('presence', {event:'sync'}, onPresence);
   ch.on('broadcast', {event:'lvl'}, ({payload}) => { if (lobby.role === 'guest' && payload && S.mode !== 'play') selectLevel(payload.c, payload.s, true); });
-  ch.on('broadcast', {event:'start'}, ({payload}) => {
-    if (lobby.role !== 'guest' || !payload || S.mode === 'play') return;
-    selectLevel(payload.c, payload.s, true); newRun();
-  });
-  ch.on('broadcast', {event:'p'}, ({payload}) => { if (payload && payload.n) lobby.pstates[payload.n] = Object.assign({}, payload, {rx:performance.now()}); });
+  ch.on('broadcast', {event:'start'}, ({payload}) => onCoopStart(payload));
+  ch.on('broadcast', {event:'n'}, ({payload}) => { if (payload && acct && (payload.to === '*' || payload.to === acct.name)) netRecv(payload.from, payload.e, payload.d); });
+  ch.on('broadcast', {event:'rtc'}, ({payload}) => { rtcOnSignal(payload); });
   ch.on('broadcast', {event:'ping'}, ({payload}) => lobbySend('pong', payload));
   ch.on('broadcast', {event:'pong'}, ({payload}) => { if (payload && payload.from === acct.name) lobby.ping = Math.round(performance.now() - payload.t); });
   ch.subscribe(async status => {
@@ -3257,11 +3301,13 @@ function onPresence(){
   }
   lobby.others = peers.filter(p => p.nick !== acct.name).sort((a, b) => a.at - b.at).slice(0, LOBBY_MAX - 1);
   for (const n of Object.keys(lobby.pstates)) if (!lobby.others.some(o => o.nick === n)) delete lobby.pstates[n];
+  for (const n of Object.keys(peers)) if (!lobby.others.some(o => o.nick === n)) rtcClose(n);
   if (lobby.role === 'guest' && lobby.others.length && !lobby.others.some(o => o.role === 'host')) lobby.msg = 'Bu lobide lobi sahibi yok.';
   else if (lobby.msg === 'Bu lobide lobi sahibi yok.') lobby.msg = '';
   renderLobby();
 }
 function lobbyLeave(silent){
+  rtcCloseAll();
   if (lobby.ch){ const ch = lobby.ch; lobby.ch = null; try { ch.untrack(); ch.unsubscribe(); NET.removeChannel(ch); } catch (_) {} }
   Object.assign(lobby, {ch:null, code:null, role:null, peers:[], others:[], ping:null, ready:false, pstates:{}, subscribed:false});
   if (!silent) lobby.msg = '';
@@ -3282,7 +3328,10 @@ function renderLobby(){
     ? os.map(pt => `<span class="lbp"><i class="lbdot" style="background:${partnerCol(pt.nick)}"></i><b>${esc(pt.nick)}</b>${pt.role === 'host' ? ' <span class="dim">(lobi sahibi)</span>' : ''} · ${pt.cls ? CLASSES[pt.cls].ad : 'Class yok'} · ${esc(pt.wpn)} · ilerleme ${pt.prog ? pt.prog.c + '-' + pt.prog.s : '?'} · ${pt.ready ? '<span class="okc">hazır</span>' : '<span class="dim">hazır değil</span>'}</span>`).join('')
       + (free > 0 ? `<span class="dim lbp">${free} kişilik yer daha var.</span>` : '')
     : `<span class="dim">Arkadaşlarının katılması bekleniyor. Kodu onlara gönder. Lobiye en fazla ${LOBBY_MAX} kişi girebilir.</span>`;
-  $('lb-ping').textContent = lobby.ping != null ? `ping ${lobby.ping} ms` : (os.length ? 'ping ölçülüyor…' : '');
+  /* misafirler sadece lobi sahibine bağlanır, lobi sahibi herkese */
+  const need = lobby.role === 'host' ? os : os.filter(o => o.role === 'host'), direct = need.filter(o => rtcOk(o.nick)).length;
+  const link = !need.length ? '' : direct === need.length ? ' · doğrudan bağlantı' : direct ? ` · ${direct}/${need.length} doğrudan` : ' · sunucu üzerinden (yavaş)';
+  $('lb-ping').textContent = (lobby.ping != null ? `ping ${lobby.ping} ms` : (os.length ? 'ping ölçülüyor…' : '')) + link;
   const rb = $('lb-ready'); rb.textContent = lobby.ready ? 'Hazır değilim' : 'Hazırım'; rb.setAttribute('aria-pressed', String(lobby.ready));
   const sb = $('lb-start'); sb.hidden = lobby.role !== 'host'; sb.disabled = !(os.length && os.every(o => o.ready) && lobby.ready) || runLocked();
   $('lb-sel').textContent = `${sel.c}-${sel.s} · ${CHAPTERS[sel.c - 1].ad}`;
@@ -3293,22 +3342,302 @@ $('lb-leave').addEventListener('click', () => lobbyLeave());
 $('lb-ready').addEventListener('click', () => { lobby.ready = !lobby.ready; lobbyTrack(); renderLobby(); });
 $('lb-start').addEventListener('click', () => {
   if (lobby.role !== 'host' || !lobby.others.length || !lobby.others.every(o => o.ready) || !lobby.ready || runLocked()) return;
-  lobbySend('start', {c:sel.c, s:sel.s}); newRun();
+  coopStart();
 });
 $('lb-copy').addEventListener('click', () => {
   const done = () => flash('Kod kopyalandı.');
   try { navigator.clipboard.writeText(lobby.code).then(done, () => flash(`Kod: ${lobby.code}`)); } catch (_) { flash(`Kod: ${lobby.code}`); }
 });
-function lobbyTick(now){
-  if (!lobby.ch || !lobby.subscribed) return;
-  if (now - (lobby.pingT || 0) > 2000){ lobby.pingT = now; lobbySend('ping', {t:now, from:acct.name}); renderLobby(); }
-  if (S.mode === 'play' && !paused && now - lobby.sendT > 50){
-    lobby.sendT = now;
-    const p = S.p;
-    lobbySend('p', {x:Math.round(p.x), y:Math.round(p.y), vx:Math.round(p.vx), vy:Math.round(p.vy), f:p.face, hp:Math.ceil(p.hp), mx:p.st.maxHp,
-      b:p.blocking ? 1 : 0, d:S.t < p.dodgeUntil ? 1 : 0, a:S.t - p.atkT < .17 ? 1 : 0, dn:p.dead ? 1 : 0, rs:p.dead ? Math.ceil(p.respawnAt - S.t) : 0, lv:attKey(), n:acct.name});
+/* ===================== CO-OP: ORTAK DÜNYA =====================
+   Lobi sahibi düşmanları simüle eder (yapay zekâ, dalgalar, boss). Diğerleri aynı düşmanları onun gönderdiği
+   anlık görüntülerden görür, aradaki hareketi yumuşatır. Bir saldırının sana değip değmediğine kendi ekranında
+   bakılır: gördüğün şeye göre dodge atarsın. Senin vuruşların lobi sahibine gider, hasarı o uygular;
+   düşman ölünce herkeste ölür, herkes kendi altınını ve eşyasını alır.
+   Oyun trafiği tarayıcılar arasında doğrudan (WebRTC) akar. Supabase sadece bağlantıyı kurmak için kullanılır.
+   Doğrudan bağlantı kurulamazsa trafik düşük hızla Supabase üzerinden gider. */
+const RTC_CFG = {iceServers:[{urls:['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302', 'stun:stun.cloudflare.com:3478']}]};
+const peers = {};   // nick -> {pc, u, r, ok, failed, t0, cands, remoteSet}
+const rtcOk = nick => { const P = peers[nick]; return !!(P && P.u && P.r && P.u.readyState === 'open' && P.r.readyState === 'open'); };
+function rtcSignal(to, data){ lobbySend('rtc', Object.assign({to, from:acct.name}, data)); }
+function rtcOpen(nick, initiator){
+  if (peers[nick]) return peers[nick];
+  if (typeof RTCPeerConnection === 'undefined') return null;
+  const pc = new RTCPeerConnection(RTC_CFG);
+  const P = peers[nick] = {nick, pc, u:null, r:null, failed:false, t0:performance.now(), cands:[], remoteSet:false};
+  pc.onicecandidate = ev => { if (ev.candidate) rtcSignal(nick, {k:'ice', c:ev.candidate.toJSON()}); };
+  pc.onconnectionstatechange = () => { if (pc.connectionState === 'failed' || pc.connectionState === 'closed'){ P.failed = true; renderLobby(); } };
+  const wire = ch => {
+    ch.onopen = () => renderLobby();
+    ch.onclose = () => renderLobby();
+    ch.onmessage = ev => { let m; try { m = JSON.parse(ev.data); } catch (_) { return; } netRecv(nick, m.e, m.d); };
+  };
+  if (initiator){
+    P.u = pc.createDataChannel('u', {ordered:false, maxRetransmits:0}); P.r = pc.createDataChannel('r', {ordered:true});
+    wire(P.u); wire(P.r);
+    pc.createOffer().then(o => pc.setLocalDescription(o))
+      .then(() => rtcSignal(nick, {k:'offer', sdp:pc.localDescription.toJSON()}))
+      .catch(() => { P.failed = true; });
+  } else pc.ondatachannel = ev => { const ch = ev.channel; if (ch.label === 'u') P.u = ch; else P.r = ch; wire(ch); };
+  return P;
+}
+async function rtcOnSignal(m){
+  if (!m || !acct || m.to !== acct.name) return;
+  const from = m.from;
+  try {
+    if (m.k === 'offer'){
+      rtcClose(from);
+      const P = rtcOpen(from, false); if (!P) return;
+      await P.pc.setRemoteDescription(m.sdp);
+      await P.pc.setLocalDescription(await P.pc.createAnswer());
+      rtcSignal(from, {k:'answer', sdp:P.pc.localDescription.toJSON()});
+      P.remoteSet = true; for (const c of P.cands) P.pc.addIceCandidate(c).catch(() => {}); P.cands = [];
+    } else if (m.k === 'answer'){
+      const P = peers[from]; if (!P || P.remoteSet) return;
+      await P.pc.setRemoteDescription(m.sdp);
+      P.remoteSet = true; for (const c of P.cands) P.pc.addIceCandidate(c).catch(() => {}); P.cands = [];
+    } else if (m.k === 'ice'){
+      const P = peers[from]; if (!P) return;
+      if (P.remoteSet) P.pc.addIceCandidate(m.c).catch(() => {}); else P.cands.push(m.c);
+    }
+  } catch (_) { const P = peers[from]; if (P) P.failed = true; }
+}
+function rtcClose(nick){ const P = peers[nick]; if (!P) return; delete peers[nick]; try { P.pc.close(); } catch (_) {} }
+function rtcCloseAll(){ for (const n of Object.keys(peers)) rtcClose(n); }
+const anyDirect = () => lobby.others.some(o => rtcOk(o.nick));
+
+/* gönder: to = nick ya da '*' (herkes). Doğrudan bağlantı açıksa oradan, değilse Supabase'den. */
+function netSend(to, ev, data, reliable){
+  const targets = to === '*' ? lobby.others.map(o => o.nick) : [to];
+  const viaServer = [];
+  for (const n of targets){
+    const P = peers[n], ch = rtcOk(n) ? (reliable ? P.r : P.u) : null;
+    if (ch){ try { ch.send(JSON.stringify({e:ev, d:data})); continue; } catch (_) {} }
+    viaServer.push(n);
+  }
+  if (!viaServer.length) return;
+  if (to === '*' && viaServer.length === targets.length) lobbySend('n', {to:'*', from:acct.name, e:ev, d:data});
+  else for (const n of viaServer) lobbySend('n', {to:n, from:acct.name, e:ev, d:data});
+}
+function netRecv(from, ev, d){
+  if (!d) return;
+  const now = performance.now();
+  if (ev === 'pi'){ netSend(from, 'po', d, true); return; }
+  if (ev === 'po'){ lobby.ping = Math.round(now - d.t); return; }
+  if (ev === 'p'){ if (d.n) lobby.pstates[d.n] = Object.assign({}, d, {rx:now}); return; }
+  if (ev === 'go'){ onCoopStart(d); return; }
+  const N = S.net;
+  if (!N || d.rid !== N.rid){
+    /* koşu henüz başlamadıysa lobi sahibinin ilk mesajlarını sakla */
+    if (d.rid && (ev === 'ev' || ev === 'w')){ lobby.early = (lobby.early || []).filter(x => now - x[3] < 3000).slice(-80); lobby.early.push([from, ev, d, now]); }
+    return;
+  }
+  if (ev === 'w' && !N.host){
+    N.lastRx = now;
+    const sample = d.t - now / 1000;
+    if (N.off == null || sample > N.off || N.off - sample > .3) N.off = sample; else N.off += (sample - N.off) * .05;
+    if (!N.snaps.length || d.t > N.snaps[N.snaps.length - 1].t) N.snaps.push(d);
+    if (N.snaps.length > 40) N.snaps.splice(0, N.snaps.length - 40);
+    for (const ps of d.pl || []) if (ps.n !== acct.name) lobby.pstates[ps.n] = Object.assign({}, ps, {rx:now});
+  } else if (ev === 'ev' && !N.host){
+    for (const e of d.l) N.evin.push(e);
+  } else if (ev === 'hit' && N.host){
+    for (const h of d.l) applyRemoteHit(h);
   }
 }
+
+/* ---------- lobi sahibi tarafı ---------- */
+let coopRid = 0;
+function coopStart(){
+  coopRid = (Date.now() % 1e9) + Math.floor(Math.random() * 1000);
+  const msg = {c:sel.c, s:sel.s, rid:coopRid};
+  lobbySend('start', msg); netSend('*', 'go', msg, true);
+  newRun({coop:true, rid:coopRid});
+}
+function onCoopStart(d){
+  if (lobby.role !== 'guest' || !d) return;
+  if (S.net && S.net.rid === d.rid) return;
+  selectLevel(d.c, d.s, true); newRun({coop:true, rid:d.rid});
+  const early = (lobby.early || []).filter(x => x[2].rid === d.rid); lobby.early = [];
+  for (const x of early) netRecv(x[0], x[1], x[2]);
+}
+/* uzaktaki oyuncular: düşmanların hedef seçebilmesi için sabit nesneler */
+const proxies = {};
+remotePlayers = () => {
+  if (!S.net || !S.net.host) return [];
+  const now = performance.now(), lv = attKey(), out = [];
+  for (const ps of Object.values(lobby.pstates)){
+    if (ps.lv !== lv || now - ps.rx > 1500) continue;
+    const q = proxies[ps.n] || (proxies[ps.n] = {remote:true, nick:ps.n, w:26, h:46, dodgeT:-9});
+    const age = Math.min(.15, (now - ps.rx) / 1000);
+    q.x = clamp(ps.x + ps.vx * age, WALL + 13, W - WALL - 13); q.y = ps.y; q.vx = ps.vx; q.vy = ps.vy; q.dead = !!ps.dn;
+    out.push(q);
+  }
+  return out;
+};
+function applyRemoteHit(h){
+  if (S.mode !== 'play') return;
+  const t = h.id === 'B' ? S.e : S.mobs.find(m => m.id === h.id);
+  if (!t || t.dead || t.hp <= 0) return;
+  if (h.stunOnly){ stunTarget(t, h.stunOnly); return; }
+  damageEnemy(t, h.b, h.el, Object.assign({}, h.o, {remote:true}));
+}
+const r1 = v => Math.round(v * 10) / 10;
+function worldSnap(){
+  const t = S.t, m = [];
+  for (const q of S.mobs){
+    if (q.dead) continue;
+    const fl = (t < q.invisUntil ? 1 : 0) | (q.enraged ? 2 : 0) | (t < q.stunUntil ? 4 : 0) | (t < q.slowUntil ? 8 : 0) | (t < q.poisonUntil ? 16 : 0)
+      | (q.aff.includes('yenilenen') && t - q.lastHitT > 2 ? 32 : 0) | (q.flash > 0 ? 64 : 0) | (q.lowFired ? 128 : 0);
+    m.push([q.id, q.a, q.origin || S.L.c, r1(q.x), r1(q.y), q.face, q.state, q.sn || 0, Math.round((q.ck - q.st) * 1000), Math.round((q.dur || 0) * 1000),
+      Math.ceil(q.hp), fl, Math.round(q.aimX || 0), Math.round(q.aimY || 0), Math.round(q.jx ?? q.lx ?? 0), Math.round(q.jy ?? q.ly ?? 0), q.cdir || 0, q.v || 0, q.aff, Math.round((q.turnT || 0) * 100)]);
+  }
+  const e = S.e;
+  const b = e ? {x:r1(e.x), y:r1(e.y), f:e.face, st:e.state, sn:e.sn || 0, el:Math.round((e.ck - e.st) * 1000), dur:Math.round((e.dur || 0) * 1000), hp:Math.ceil(e.hp), ph:e.phase,
+    held:e.held ? 1 : 0, lx:Math.round(e.leapX || 0), cd:e.chargeDir || 1, rows:e.rows || [], vn:e.volleyN || 3, rn:e.ringN || 0, ra:Math.round((e.ringA || 0) * 1000),
+    tx:e.tg ? Math.round(e.tg.x) : 0, ty:e.tg ? Math.round(e.tg.y) : FLOOR, fl:(e.flash > 0 ? 1 : 0) | (t < e.slowUntil ? 2 : 0)} : null;
+  const pl = [myState()];
+  const now = performance.now();
+  for (const ps of Object.values(lobby.pstates)) if (now - ps.rx < 1500){ const c = Object.assign({}, ps); delete c.rx; pl.push(c); }
+  return {rid:S.net.rid, t:Math.round(t * 1000) / 1000, wv:S.wave, m, b, pl};
+}
+function myState(){
+  const p = S.p;
+  return {n:acct.name, x:Math.round(p.x), y:Math.round(p.y), vx:Math.round(p.vx), vy:Math.round(p.vy), f:p.face, hp:Math.ceil(p.hp), mx:p.st.maxHp,
+    b:p.blocking ? 1 : 0, d:S.t < p.dodgeUntil ? 1 : 0, a:S.t - p.atkT < .17 ? 1 : 0, dn:p.dead ? 1 : 0, rs:p.dead ? Math.ceil(p.respawnAt - S.t) : 0, lv:attKey()};
+}
+
+/* ---------- misafir tarafı ---------- */
+function hostNow(){ const N = S.net; return N.off == null ? null : performance.now() / 1000 + N.off - (anyDirect() ? .1 : .25); }
+function guestWorld(dt){
+  const N = S.net, now = performance.now();
+  for (const m of S.mobs) if (m.flash > 0) m.flash -= dt;
+  if (S.e && S.e.flash > 0) S.e.flash -= dt;
+  if (now - N.lastRx > 6000){ endRun(false); flash('Lobi sahibiyle bağlantı koptu.'); return; }
+  const rt = hostNow(); if (rt == null) return;
+  while (N.evin.length && N.evin[0][2] <= rt){
+    const [k, d] = N.evin.shift();
+    applyEv(k, d);
+    if (S.mode !== 'play') return;
+  }
+  const sn = N.snaps; if (!sn.length) return;
+  while (sn.length > 2 && sn[1].t <= rt) sn.shift();
+  const a = sn[0], b = sn.length > 1 ? sn[1] : a;
+  const k = b === a ? 0 : clamp((rt - a.t) / (b.t - a.t), 0, 1);
+  applySnap(a, b, k, rt);
+  guestHits();
+  S.mobs = S.mobs.filter(m => !m.dead);
+}
+function applySnap(a, b, k, rt){
+  const N = S.net, bm = new Map(b.m.map(r => [r[0], r])), live = new Set();
+  S.wave = a.wv;
+  for (const ra of a.m){
+    const id = ra[0]; if (N.dead.has(id)) continue;
+    const rb = bm.get(id) || ra;
+    let m = S.mobs.find(q => q.id === id);
+    if (!m){ m = spawnMob({a:ra[1], x:ra[3], origin:ra[2], aff:ra[18] || [], v:ra[17], id}); }
+    live.add(id);
+    m.x = ra[3] + (rb[3] - ra[3]) * k; m.y = ra[4] + (rb[4] - ra[4]) * k;
+    const rate = rb[7] === ra[7] && b.t > a.t ? (rb[8] - ra[8]) / 1000 / (b.t - a.t) : 1;
+    m.face = ra[5]; m.state = ra[6]; m.sn = ra[7]; m.st = 0; m.ck = ra[8] / 1000 + Math.max(0, rate) * (rt - a.t); m.dur = ra[9] / 1000;
+    if (performance.now() >= (m.predUntil || 0) || ra[10] < m.hp) m.hp = ra[10];
+    const fl = ra[11], t = S.t;
+    m.invisUntil = fl & 1 ? t + .2 : -9; m.enraged = !!(fl & 2); m.stunUntil = fl & 4 ? t + .2 : -9; m.slowUntil = fl & 8 ? t + .2 : -9;
+    m.poisonUntil = fl & 16 ? t + .2 : -9; m.lastHitT = fl & 32 ? t - 3 : t; if (fl & 64 && !(m.flash > 0)) m.flash = .05; m.lowFired = !!(fl & 128);
+    m.aimX = ra[12]; m.aimY = ra[13]; m.jx = m.lx = ra[14]; m.jy = m.ly = ra[15]; m.cdir = ra[16]; m.v = ra[17]; m.turnT = ra[19] / 100;
+  }
+  for (const m of S.mobs) if (!live.has(m.id) && m.state !== 'spawn') m.dead = true;
+  const e = S.e, ba = a.b, bb = b.b || ba;
+  if (e && ba){
+    e.x = ba.x + (bb.x - ba.x) * k; e.y = ba.y + (bb.y - ba.y) * k; e.vx = 0; e.vy = 0;
+    e.face = ba.f; e.state = ba.st; e.sn = ba.sn; e.st = 0; e.ck = ba.el / 1000 + (rt - a.t); e.dur = ba.dur / 1000;
+    if (performance.now() >= (e.predUntil || 0) || ba.hp < e.hp) e.hp = ba.hp;
+    if (ba.ph === 2 && e.phase === 1){ e.phase = 2; addShake(10); S.banner = {txt:e.def.weak2 ? `2. AŞAMA · zayıflık ${elAd(e.def.weak2)}` : '2. AŞAMA', t:S.t}; if (e.def.weak2) e.weak = e.def.weak2; }
+    e.held = !!ba.held; e.leapX = ba.lx; e.chargeDir = ba.cd; e.rows = ba.rows; e.volleyN = ba.vn; e.ringN = ba.rn; e.ringA = ba.ra / 1000;
+    e.tg = {x:ba.tx, y:ba.ty, vx:0, vy:0, w:26, h:46};
+    if (ba.fl & 1 && !(e.flash > 0)) e.flash = .05;
+    e.slowUntil = ba.fl & 2 ? S.t + .2 : -9;
+  }
+}
+/* misafir kendi ekranında görünen saldırılara göre hasar alır. sn: saldırının sırası, her saldırı bir kez vurur. */
+const PUPPET_HIT = {
+  bash:m => bashBox(m), dash:m => dashBox(m), dive:m => tRect(m), charge:m => tRect(m),
+  erupt:m => ({l:m.x - 22, r:m.x + 22, t:FLOOR - 96, b:FLOOR}), leap:m => (m.ck / Math.max(.01, m.dur) > .65 ? tRect(m) : null)
+};
+function guestHits(){
+  const p = S.p, pr = pRect();
+  for (const m of S.mobs){
+    const f = PUPPET_HIT[m.state]; if (!f || m.ghk === m.sn) continue;
+    const box = f(m); if (!box || !ov(box, pr)) continue;
+    m.ghk = m.sn;
+    const r = hurtPlayer({dmg:m.dmg, el:m.el, dir:m.face, fromX:m.x, who:m});
+    if (r === 'dodged') dodgedFx(S.t - p.dodgeT < .1);
+    else if (r === 'hit' && m.a === 'tank') p.vx = m.face * 420;
+  }
+  const e = S.e; if (!e || e.hp <= 0 || e.ghk === e.sn) return;
+  const D = k => BDMG[k] * e.dmgF;
+  let o = null;
+  if (e.state === 'lunge' && ov(lungeBox(e), pr)) o = {dmg:D('lunge'), el:e.el, dir:e.face, fromX:e.x, who:e};
+  else if (e.state === 'charge' && ov(tRect(e), pr)) o = {dmg:D('charge'), el:e.el, dir:e.chargeDir, fromX:e.x - e.chargeDir * 10, who:e};
+  else if (e.state === 'rowStrike' && e.ck < .25 && e.rows.includes(rowOf(p.y))) o = {dmg:D('row'), el:e.el, dir:Math.sign(p.x - e.x) || 1, blockable:false};
+  if (!o) return;
+  e.ghk = e.sn;
+  const r = hurtPlayer(o);
+  if (r === 'dodged') dodgedFx(S.t - p.dodgeT < .1);
+}
+function applyEv(k, d){
+  const N = S.net, p = S.p;
+  if (k === 'sp'){ if (!S.mobs.some(m => m.id === d.id) && !N.dead.has(d.id)) spawnMob({a:d.a, x:d.x, home:d.home, origin:d.o, aff:d.aff || [], v:d.v, id:d.id}); }
+  else if (k === 'wave'){ S.wave = d.i; if (!S.e || d.i > 0) S.banner = {txt:`Dalga ${d.i + 1} / ${S.L.waves.length}`, t:S.t, sub:FORMS[S.L.waves[d.i].form]}; }
+  else if (k === 'kill'){ N.dead.add(d.id); const m = S.mobs.find(q => q.id === d.id); if (m && !m.dead) kill(m); }
+  else if (k === 'bkill'){ if (S.e && S.e.hp > 0) kill(S.e); }
+  else if (k === 'end') endRun(!!d.won);
+  else if (k === 'shot'){
+    const sh = SHOT[d.k];
+    S.shots.push({kind:d.k, len:sh.len || 0, tip:(sh.len || 0) * (sh.tipF || 0), gap:sh.gap || 0, r:sh.r || 0,
+      x:d.x, y:d.y, vx:Math.cos(d.a) * d.s, vy:Math.sin(d.a) * d.s, ang:d.a, stuck:false, life:0, res:null, dead:false, en:null, dmg:d.d, el:d.el, who:null});
+  }
+  else if (k === 'quake') S.quakes.push({x:d.x - 21, dir:-1, done:false, dmg:d.dmg, el:d.el}, {x:d.x + 21, dir:1, done:false, dmg:d.dmg, el:d.el});
+  else if (k === 'bomb') S.bombs.push({x:d.x, y:d.y, at:S.t + d.in, lead:d.lead, r:d.r, dmg:d.dmg, el:d.el, col:d.col, rain:!!d.rain});
+  else if (k === 'gren') S.grenades.push(Object.assign({}, d, {t0:S.t}));
+  else if (k === 'boom'){ S.booms.push({x:d.x, y:d.y, r:d.r, t:S.t, col:AFFIX.patlayan.col}); addShake(6); burst(d.x, d.y, AFFIX.patlayan.col, 24, 300); boomHit(d.x, d.y, d.r, d.dmg, d.el); }
+  else if (k === 'slam'){
+    addShake(9); S.booms.push({x:d.x, y:FLOOR, r:d.r, t:S.t, col:S.e ? S.e.pal.light : C.ember, flat:true});
+    if (Math.abs(p.x - d.x) < d.r && rowOf(p.y) === 1){
+      const r = hurtPlayer({dmg:d.dmg, el:d.el, dir:Math.sign(p.x - d.x) || 1, fromX:d.x, who:S.e});
+      if (r === 'dodged') dodgedFx(S.t - p.dodgeT < .1);
+    }
+  }
+}
+
+/* ---------- her kare: gönderimler ---------- */
+function netTick(now){
+  if (!lobby.ch || !lobby.subscribed || !acct) return;
+  /* misafir lobi sahibine doğrudan bağlanmayı dener, kopunca 8 sn sonra tekrar dener */
+  if (lobby.role === 'guest'){
+    const h = lobby.others.find(o => o.role === 'host');
+    if (h){ const P = peers[h.nick]; if (!P || (P.failed && now - P.t0 > 8000) || (!rtcOk(h.nick) && now - P.t0 > 15000)){ rtcClose(h.nick); rtcOpen(h.nick, true); } }
+  }
+  if (now - (lobby.pingT || 0) > 2000){
+    lobby.pingT = now;
+    const direct = lobby.others.filter(o => rtcOk(o.nick));
+    if (direct.length) netSend(direct[0].nick, 'pi', {t:now}, true);
+    else if (lobby.others.length) lobbySend('ping', {t:now, from:acct.name});
+    renderLobby();
+  }
+  const N = S.net;
+  if (!N){ return; }
+  /* doğrudan bağlantıda saniyede 20 görüntü; sunucu üzerindeyse 8 ve olaylar toplu gider (Supabase saniyede 100 mesaj sınırı) */
+  const direct = anyDirect(), iv = direct ? 50 : 125, batchOk = direct || now - (lobby.evT || 0) >= 125;
+  if (N.host){
+    if (N.evq.length && batchOk){ lobby.evT = now; netSend('*', 'ev', {rid:N.rid, l:N.evq}, true); N.evq = []; }
+    if (S.mode === 'play' && now - (lobby.sendT || 0) >= iv){ lobby.sendT = now; netSend('*', 'w', worldSnap(), false); }
+  } else if (S.mode === 'play'){
+    const h = lobby.others.find(o => o.role === 'host'); if (!h) return;
+    if (N.hits.length && batchOk){ lobby.evT = now; netSend(h.nick, 'hit', {rid:N.rid, l:N.hits}, true); N.hits = []; }
+    if (now - (lobby.sendT || 0) >= iv){ lobby.sendT = now; netSend(h.nick, 'p', Object.assign(myState(), {rid:N.rid}), false); }
+  }
+}
+
 function drawPartner(){
   if (!lobby.ch || S.mode === 'title') return;
   for (const ps of Object.values(lobby.pstates)) drawMate(ps);
@@ -3356,9 +3685,9 @@ function handleMeta(){
     pressed.delete('next');
     if (S.mode === 'won'){ if (sel.s < 50) selectLevel(sel.c, sel.s + 1); else if (sel.c < 10) selectLevel(sel.c + 1, 1); }
   }
-  if (pressed.has('pause')){ pressed.delete('pause'); if (S.mode === 'play') paused = !paused; }
-  if (pressed.has('restart')){ pressed.delete('restart'); newRun(); return; }
-  if (pressed.has('confirm')){ pressed.delete('confirm'); if (S.mode !== 'play') newRun(); else if (paused) paused = false; }
+  if (pressed.has('pause')){ pressed.delete('pause'); if (S.mode === 'play'){ if (S.net) flash('Co-op oyunda durdurma yok, dünya herkes için akıyor.'); else paused = !paused; } }
+  if (pressed.has('restart')){ pressed.delete('restart'); requestRun(); return; }
+  if (pressed.has('confirm')){ pressed.delete('confirm'); if (S.mode !== 'play') requestRun(); else if (paused) paused = false; }
 }
 let last = performance.now(), costSum = 0, costN = 0;
 function frame(now){
@@ -3372,7 +3701,7 @@ function frame(now){
   } else pressed.clear();
   if (S.shake > 0) S.shake = Math.max(0, S.shake - dt * 30);
   if (S.e) S.e.shown += (S.e.hp - S.e.shown) * Math.min(1, dt * 4);
-  lobbyTick(now);
+  netTick(now);
   render(now);
   /* kare başına iş 11 ms'yi geçerse çözünürlüğü kademeli düşür, rahatlayınca geri yükselt */
   costSum += performance.now() - c0; costN++;
