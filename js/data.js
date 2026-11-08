@@ -193,8 +193,8 @@ const WEAPONS = {
   cekic:    {ad:'Savaş Çekici',     cls:'tank',      kind:'hammer', dmg:14, cd:.7,  fx:'aoe',     bilgi:'Önündeki herkese ağır vuruş. Kalkanları deler. Bloklayamaz.'},
   simsek:   {ad:'Şimşek Asası',     cls:'buyucu',    kind:'staff',  dmg:6,  cd:.9,  fx:'stun',    bilgi:'İmleçteki düşmanlara yıldırım. Mobları sersemletir, bosslara işlemez.'},
   ayaz:     {ad:'Ayaz Asası',       cls:'buyucu',    kind:'staff',  dmg:7,  cd:.5,  fx:'slow',    range:460, bilgi:'Buz parçası atar, düşmanı ve hazırlık sürelerini yavaşlatır. Menzil 460.'},
-  sifa:     {ad:'Şifa Asası',       cls:'buyucu',    kind:'staff',  dmg:0,  cd:3.5, fx:'heal',    bilgi:'Canının %25\'ini yeniler. Co-op\'ta arkadaşını da iyileştirecek.'},
-  bariyer:  {ad:'Bariyer Asası',    cls:'buyucu',    kind:'staff',  dmg:0,  cd:6,   fx:'barrier', bilgi:'Bir sonraki vuruşu emen kalkan basar.'}
+  sifa:     {ad:'Şifa Asası',       cls:'buyucu',    kind:'staff',  dmg:0,  cd:3.5, fx:'heal',    bilgi:'Canını ve yakınındaki takım arkadaşlarının canını %25 yeniler. Etki alanı halka olarak görünür.'},
+  bariyer:  {ad:'Bariyer Asası',    cls:'buyucu',    kind:'staff',  dmg:0,  cd:6,   fx:'barrier', bilgi:'Sana ve yakınındaki takım arkadaşlarına bir sonraki vuruşu emen kalkan basar (6 sn).'}
 };
 const FIST = {ad:'Yumruk', cls:null, kind:'fist', dmg:5, cd:.3, fx:'single', bilgi:'Çıplak el.'};
 /* herkesin dodge'u aynı. Class'ın 4 zırh parçası tamamlanınca dodge, class yeteneğine dönüşür (CLASSES.yetenek). */

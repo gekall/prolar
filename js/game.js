@@ -286,8 +286,8 @@ const FX_TAGS = {
   poison:[['poison', 'Zehir', '3 sn boyunca zehir hasarı verir.', 'off'], ['aoe', 'Yayılır', 'Zehir yakındaki düşmanlara da bulaşır.', 'off']],
   stun:[['stun', 'Sersemletir', 'Mobları 1,2 sn durdurur. Bosslara işlemez.', 'util'], ['aoe', 'Alan hasarı', 'İmlecin çevresindeki herkese çarpar.', 'off']],
   slow:[['slow', 'Yavaşlatır', 'Düşmanı ve hazırlık sürelerini 2 sn yavaşlatır.', 'util']],
-  heal:[['heal', 'İyileştirir', 'Canının %25\'ini yeniler.', 'def']],
-  barrier:[['barrier', 'Bariyer', 'Bir sonraki vuruşu tamamen emer.', 'def']]
+  heal:[['heal', 'Takımı iyileştirir', 'Senin ve yakınındaki takım arkadaşlarının canını %25 yeniler.', 'def']],
+  barrier:[['barrier', 'Takıma bariyer', 'Sana ve yakınındaki takım arkadaşlarına bir sonraki vuruşu emen kalkan basar.', 'def']]
 };
 const KIND_TAGS = {
   bow:[['ranged', 'Menzilli', 'Mouse ile elle nişan alırsın, her tıkta bir ok. Okun belli bir menzili var.', 'util']],
@@ -1068,7 +1068,34 @@ function firePlayerShot(kind, dmg, el, extra){
 }
 /* co-op: kendi atışlarını, şimşeklerini ve iyileşmeni takım arkadaşlarına gönder (sadece görüntü) */
 function netVfx(v){ if (S.net) (S.vfx || (S.vfx = [])).push(v); }
+/* takım büyüsü: halkanın içindeki takım arkadaşları da iyileşir ya da kalkan alır. Etki herkesin kendi oyununda uygulanır. */
+const TEAM_R = 320;
+function teamCast(k, txt){
+  const p = S.p;
+  S.booms.push({x:p.x, y:p.y - 24, r:TEAM_R, t:S.t, col:C.frost, ring:true, d:.6});
+  if (!S.net) return;
+  netVfx({k, x:Math.round(p.x), y:Math.round(p.y), txt});
+  const now = performance.now(), lv = attKey();
+  for (const ps of Object.values(lobby.pstates)){
+    if (ps.lv !== lv || ps.dn || now - ps.rx > 1500 || Math.hypot(ps.x - p.x, ps.y - p.y) > TEAM_R) continue;
+    text(ps.x, ps.y - 70, k === 'heal' ? 'ŞİFA' : 'BARİYER', C.frost, 14);
+  }
+}
 function applyVfx(v){
+  if (v.k === 'heal' || v.k === 'bar'){
+    const p = S.p;
+    S.booms.push({x:v.x, y:v.y - 24, r:TEAM_R, t:S.t, col:C.frost, ring:true, d:.6});
+    text(v.x, v.y - 64, v.txt, C.frost, 16); burst(v.x, v.y - 30, C.frost, 12, 160);
+    if (p.dead || S.mode !== 'play' || Math.hypot(p.x - v.x, p.y - v.y) > TEAM_R) return;
+    if (v.k === 'heal'){
+      const before = p.hp; p.hp = Math.min(p.st.maxHp, p.hp + Math.round(p.st.maxHp * .25));
+      if (p.hp > before){ text(p.x, p.y - 84, '+' + Math.round(p.hp - before), C.frost, 18); burst(p.x, p.y - 30, C.frost, 14, 160); }
+    } else {
+      p.barrier = 1; p.barrierUntil = S.t + 6;
+      text(p.x, p.y - 84, 'BARİYER', C.frost, 15); burst(p.x, p.y - 30, C.frost, 12, 160);
+    }
+    return;
+  }
   if (v.k === 's'){
     const sh = SHOT[v.kind]; if (!sh) return;
     S.pshots.push({kind:v.kind, x:v.x, y:v.y, vx:Math.cos(v.a) * v.sp, vy:Math.sin(v.a) * v.sp, ang:v.a, len:sh.len || 0, tip:(sh.len || 0) * (sh.tipF || 0),
@@ -1090,10 +1117,10 @@ function doAttack(){
     else if (w.fx === 'heal'){
       const amt = Math.round(st.maxHp * .25), before = p.hp; p.hp = Math.min(st.maxHp, p.hp + amt);
       text(p.x, p.y - 64, '+' + (p.hp - before), C.frost, 18); burst(p.x, p.y - 30, C.frost, 16, 160);
-      netVfx({k:'t', txt:'+' + (p.hp - before), x:Math.round(p.x), y:Math.round(p.y)});
+      teamCast('heal', '+' + (p.hp - before));
     } else if (w.fx === 'barrier'){
       p.barrier = 1; p.barrierUntil = t + 6; text(p.x, p.y - 64, 'BARİYER', C.frost, 15); burst(p.x, p.y - 30, C.frost, 12, 160);
-      netVfx({k:'t', txt:'BARİYER', x:Math.round(p.x), y:Math.round(p.y)});
+      teamCast('bar', 'BARİYER');
     }
   }
 }
@@ -1989,7 +2016,7 @@ function updFx(dt){
   S.fx = S.fx.filter(f => f.age < f.life);
   for (const tx of S.texts){ tx.age += dt; tx.y -= 42 * dt; }
   S.texts = S.texts.filter(tx => tx.age < tx.life);
-  S.booms = S.booms.filter(b => S.t - b.t < .35);
+  S.booms = S.booms.filter(b => S.t - b.t < (b.d || .35));
   S.bolts = S.bolts.filter(b => S.t - b.t < .25);
 }
 function step(dt){
@@ -2406,9 +2433,10 @@ function drawShots(){
     }
   }
   for (const b of S.booms){
-    const k = (S.t - b.t) / .35;
+    const k = (S.t - b.t) / (b.d || .35);
     ctx.globalAlpha = 1 - k;
     if (b.flat){ ctx.strokeStyle = b.col; ctx.lineWidth = 4; ctx.beginPath(); ctx.ellipse(b.x, b.y - 1, b.r * (.3 + .7 * k), 12, 0, 0, Math.PI * 2); ctx.stroke(); }
+    else if (b.ring){ ctx.strokeStyle = b.col; ctx.lineWidth = 3; ctx.beginPath(); ctx.arc(b.x, b.y, b.r * (.2 + .8 * k), 0, Math.PI * 2); ctx.stroke(); }
     else { ctx.fillStyle = rgba(b.col, .35); ctx.beginPath(); ctx.arc(b.x, b.y, b.r * (.4 + .6 * k), 0, Math.PI * 2); ctx.fill(); ctx.strokeStyle = b.col; ctx.lineWidth = 3; ctx.stroke(); }
     ctx.globalAlpha = 1;
   }
