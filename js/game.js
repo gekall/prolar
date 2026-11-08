@@ -1063,6 +1063,18 @@ function firePlayerShot(kind, dmg, el, extra){
   const range = (extra && extra.range) || 900;
   S.pshots.push(Object.assign({kind, x:sx, y:sy, vx:Math.cos(ang) * speed, vy:Math.sin(ang) * speed, ang,
     len:sh.len || 0, tip:(sh.len || 0) * (sh.tipF || 0), gap:sh.gap || 0, r:sh.r || 0, dmg, el, hitSet:new Set(), dead:false, life:range / speed}, extra));
+  netVfx({k:'s', kind, x:Math.round(sx), y:Math.round(sy), a:Math.round(ang * 1000) / 1000, sp:speed, life:Math.round(range / speed * 1000) / 1000,
+    aoe:extra && extra.aoe ? 1 : 0, pc:extra && extra.pierce ? 1 : 0, pw:extra && extra.power ? 1 : 0, el:el || 0});
+}
+/* co-op: kendi atışlarını, şimşeklerini ve iyileşmeni takım arkadaşlarına gönder (sadece görüntü) */
+function netVfx(v){ if (S.net) (S.vfx || (S.vfx = [])).push(v); }
+function applyVfx(v){
+  if (v.k === 's'){
+    const sh = SHOT[v.kind]; if (!sh) return;
+    S.pshots.push({kind:v.kind, x:v.x, y:v.y, vx:Math.cos(v.a) * v.sp, vy:Math.sin(v.a) * v.sp, ang:v.a, len:sh.len || 0, tip:(sh.len || 0) * (sh.tipF || 0),
+      gap:sh.gap || 0, r:sh.r || 0, dmg:0, el:v.el || null, hitSet:new Set(), dead:false, life:v.life, aoe:!!v.aoe, pierce:!!v.pc, power:!!v.pw, ghost:true});
+  } else if (v.k === 'b') S.bolts.push({x:v.x, y:v.y, t:S.t});
+  else if (v.k === 't'){ text(v.x, v.y - 64, v.txt, C.frost, 16); burst(v.x, v.y - 30, C.frost, 12, 160); }
 }
 function doAttack(){
   const p = S.p, st = p.st, w = st.wd, t = S.t;
@@ -1078,8 +1090,10 @@ function doAttack(){
     else if (w.fx === 'heal'){
       const amt = Math.round(st.maxHp * .25), before = p.hp; p.hp = Math.min(st.maxHp, p.hp + amt);
       text(p.x, p.y - 64, '+' + (p.hp - before), C.frost, 18); burst(p.x, p.y - 30, C.frost, 16, 160);
+      netVfx({k:'t', txt:'+' + (p.hp - before), x:Math.round(p.x), y:Math.round(p.y)});
     } else if (w.fx === 'barrier'){
       p.barrier = 1; p.barrierUntil = t + 6; text(p.x, p.y - 64, 'BARİYER', C.frost, 15); burst(p.x, p.y - 30, C.frost, 12, 160);
+      netVfx({k:'t', txt:'BARİYER', x:Math.round(p.x), y:Math.round(p.y)});
     }
   }
 }
@@ -1136,7 +1150,7 @@ function updPlayer(dt){
   /* şimşek gecikmesi */
   if (p.castT > 0 && t - p.castT >= .15){
     const cx = p.castX, cy = p.castY; p.castT = -9;
-    S.bolts.push({x:cx, y:cy, t});
+    S.bolts.push({x:cx, y:cy, t}); netVfx({k:'b', x:Math.round(cx), y:Math.round(cy)});
     addShake(3);
     for (const e of enemies()) if (circRect(cx, cy, 55, tRect(e))) damageEnemy(e, st.dmg, st.wEl, {blockable:false, stun:1.2});
   }
@@ -1893,6 +1907,7 @@ function updShots(dt){
 }
 function explode(x, y, s){
   S.booms.push({x, y, r:60, t:S.t, col:elCol(s.el) || C.ember});
+  if (s.ghost) return;
   addShake(3);
   for (const e of enemies()) if (circRect(x, y, 60, tRect(e))) damageEnemy(e, s.dmg, s.el, {blockable:false, fromX:x});
 }
@@ -1911,6 +1926,7 @@ function updPShots(dt){
       const [tx, ty] = shotTip(s);
       if (s.aoe){ explode(tx, ty, s); s.dead = true; break; }
       s.hitSet.add(e);
+      if (s.ghost){ burst(tx, ty, s.el ? elCol(s.el) : C.bone, 4, 140); if (!s.pierce) s.dead = true; continue; }
       const hit = damageEnemy(e, s.dmg, s.el, {fromX:s.x - Math.sign(s.vx) * 20, slow:s.slow || 0, crit:s.crit, power:s.power});
       /* delici ok her delişte %35 hasar kaybeder; kalkana çarparsa durur */
       if (!s.pierce || !hit) s.dead = true; else { s.dmg *= .65; s.crit = false; s.power = false; }
@@ -2996,8 +3012,80 @@ function drawBodyShape(x, y, col, outfit){
   if (outfit){ ctx.fillStyle = outfit; rr(x - 11, y - 30, 22, 18, 5); ctx.fill(); }
   ctx.fillStyle = rgba(C.pit, .22); rr(x - 11, y - 11, 22, 11, 4); ctx.fill();
 }
+/* oyuncunun görünümü: zırh renkleri, silah, saldırı anı, nişan, kalkan, dodge. Co-op'ta takım arkadaşlarına da gönderilir. */
+function heroLook(){
+  const p = S.p, st = p.st, t = S.t;
+  return {ae:Math.round(Math.min(3, t - p.atkT) * 1000) / 1000, wk:st.wd.kind, el:st.wEl || 0, rd:t - p.atkT >= st.atkCd ? 1 : 0,
+    bl:p.blocking ? (t - p.blockStart < st.parryWin ? 2 : 1) : 0, dg:t < p.dodgeUntil ? p.dodgeDir : 0, ds:st.def.shadow ? 1 : st.def.bash ? 2 : 0,
+    ifr:t < p.ifrUntil ? 1 : 0, hb:S.mode === 'play' && t < p.hurtUntil ? 1 : 0, g:[gearCls('kiyafet') || 0, gearCls('sapka') || 0, gearCls('pantolon') || 0],
+    br:p.barrier > 0 && t < p.barrierUntil ? 1 : 0, am:Math.round(Math.atan2(mouse.y - (p.y - 30), mouse.x - p.x) * 100) / 100,
+    pw:t < (p.powerUntil || -9) ? 1 : 0, cr:t < (p.critUntil || -9) ? 1 : 0};
+}
+/* bir oyuncuyu çiz: kendin ya da takım arkadaşın */
+function drawHero(x, y, f, h){
+  const t = S.t;
+  if (h.hb && Math.floor(performance.now() / 62.5) % 2 === 0) return;
+  const [body, hat, pants] = h.g || [0, 0, 0], outfit = body ? CLASSES[body].col : null;
+  if (h.dg){
+    const gc = h.ds === 1 ? '#b9a4e8' : h.ds === 2 ? C.stoneHi : C.frost;
+    for (let k = 3; k >= 1; k--){ ctx.globalAlpha = .16 * (4 - k); drawBodyShape(x - h.dg * k * 15, y, gc); }
+    ctx.globalAlpha = 1;
+    if (h.ds === 2){ ctx.fillStyle = C.stoneHi; rr(x + h.dg * 14 - 6, y - 50, 12, 46, 3); ctx.fill(); ctx.strokeStyle = rgba(C.frost, .8); ctx.lineWidth = 2; ctx.stroke(); }
+  }
+  if (h.pw && !h.dg){ ctx.strokeStyle = rgba(C.ember, .5 + .4 * Math.sin(t * 20)); ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(x + f * 12, y - 30, 9, 0, Math.PI * 2); ctx.stroke(); }
+  if (h.cr){ ctx.fillStyle = rgba('#b9a4e8', .5 + .4 * Math.sin(t * 20)); ctx.beginPath(); ctx.arc(x, y - 58, 3.5, 0, Math.PI * 2); ctx.fill(); }
+  drawBodyShape(x, y, h.ifr ? C.frost : C.bone, h.ifr ? null : outfit);
+  if (pants && !h.ifr){ ctx.fillStyle = rgba(CLASSES[pants].col, .9); ctx.fillRect(x - 10, y - 12, 8, 12); ctx.fillRect(x + 2, y - 12, 8, 12); }
+  ctx.fillStyle = C.pit; ctx.fillRect(x + f * 3 - 1.5, y - 40, 3, 3);
+  /* şapka */
+  if (hat){
+    ctx.fillStyle = CLASSES[hat].col;
+    if (hat === 'okcu'){ ctx.beginPath(); ctx.moveTo(x - 10, y - 36); ctx.lineTo(x - f * 6, y - 52); ctx.lineTo(x + 10, y - 36); ctx.closePath(); ctx.fill(); }
+    else if (hat === 'suikastci'){ ctx.fillRect(x - 9, y - 41, 18, 5); }
+    else if (hat === 'tank'){ ctx.fillRect(x - 10, y - 47, 20, 10); ctx.fillStyle = C.pit; ctx.fillRect(x + f * 2 - 5, y - 41, 10, 2); }
+    else { ctx.fillRect(x - 13, y - 44, 26, 3); ctx.beginPath(); ctx.moveTo(x - 8, y - 44); ctx.lineTo(x - f * 4, y - 64); ctx.lineTo(x + 8, y - 44); ctx.fill(); }
+  }
+  /* silah */
+  const ae = h.ae, aimA = h.am || 0, wk = h.wk || 'fist', wEl = h.el || null;
+  ctx.lineCap = 'round';
+  if (wk === 'bow'){
+    const a = Math.abs(aimA) < Math.PI / 2 === (f > 0) ? aimA : (f > 0 ? 0 : Math.PI);
+    const bx = x + Math.cos(a) * 14, by = y - 30 + Math.sin(a) * 14;
+    ctx.strokeStyle = C.rust; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.arc(bx - Math.cos(a) * 6, by - Math.sin(a) * 6, 15, a - 1.1, a + 1.1); ctx.stroke();
+    if (h.local && S.mode === 'play' && !paused){ ctx.strokeStyle = rgba(C.bone, .16); ctx.lineWidth = 1; ctx.setLineDash([4, 6]); ctx.beginPath(); ctx.moveTo(bx, by); ctx.lineTo(bx + Math.cos(aimA) * 70, by + Math.sin(aimA) * 70); ctx.stroke(); ctx.setLineDash([]); }
+  } else if (wk === 'staff'){
+    /* atış anında asa nişan yönüne doğru eğilir */
+    const sx = x + f * 13, lean = ae < .25 ? (1 - ae / .25) * .5 : 0;
+    const tx = sx + Math.cos(aimA) * 20 * lean, ty = y - 54 + (Math.sin(aimA) + 1) * 14 * lean;
+    ctx.strokeStyle = C.dust; ctx.lineWidth = 3; ctx.beginPath(); ctx.moveTo(sx, y - 2); ctx.lineTo(tx, ty); ctx.stroke();
+    drawOrb(tx, ty - 4, h.rd ? 5 : 3, wEl ? elCol(wEl) : C.frost);
+    if (ae < .18){ ctx.globalAlpha = 1 - ae / .18; drawOrb(tx, ty - 4, 10, wEl ? elCol(wEl) : C.frost); ctx.globalAlpha = 1; }
+  } else if (wk === 'shield'){
+    const blocking = h.bl > 0, sx = x + f * (blocking ? 16 : 10), sy = blocking ? y - 46 : y - 34;
+    ctx.fillStyle = h.bl === 2 ? C.ember : C.stoneHi; rr(sx - 5, sy, 10, blocking ? 40 : 26, 3); ctx.fill();
+    ctx.strokeStyle = blocking ? C.frost : C.rust; ctx.lineWidth = 2; rr(sx - 5, sy, 10, blocking ? 40 : 26, 3); ctx.stroke();
+  } else if (wk === 'hammer' && ae >= .3){
+    ctx.strokeStyle = C.rust; ctx.lineWidth = 4; ctx.beginPath(); ctx.moveTo(x + f * 6, y - 20); ctx.lineTo(x + f * 10, y - 56); ctx.stroke();
+    ctx.fillStyle = C.stoneHi; ctx.fillRect(x + f * 10 - 9, y - 64, 18, 12);
+  }
+  const mm = MELEE[wk];
+  if (mm && ae < mm.b){
+    const k = ae / mm.b, rad = wk === 'hammer' ? 62 : wk === 'dagger' ? 32 : wk === 'fist' ? 26 : 42;
+    const a0 = wk === 'hammer' ? -1.9 : -1.1, a1 = .7;
+    ctx.strokeStyle = rgba(wEl ? elCol(wEl) : C.bone, ae >= mm.a ? .95 : .4); ctx.lineWidth = ae >= mm.a ? 5 : 2;
+    ctx.beginPath();
+    if (f > 0) ctx.arc(x + 4, y - 26, rad, a0, a0 + (a1 - a0) * Math.min(1, k * 1.4));
+    else ctx.arc(x - 4, y - 26, rad, Math.PI - a0, Math.PI - a0 - (a1 - a0) * Math.min(1, k * 1.4), true);
+    ctx.stroke();
+  } else if (wk === 'dagger' || wk === 'fist'){
+    ctx.strokeStyle = C.dust; ctx.lineWidth = wk === 'dagger' ? 3 : 4;
+    ctx.beginPath(); ctx.moveTo(x + f * 8, y - 18); ctx.lineTo(x + f * (wk === 'dagger' ? 18 : 14), y - (wk === 'dagger' ? 10 : 18)); ctx.stroke();
+  }
+  if (h.br){ ctx.strokeStyle = rgba(C.frost, .6 + .3 * Math.sin(t * 8)); ctx.lineWidth = 2; ctx.beginPath(); ctx.ellipse(x, y - 24, 22, 30, 0, 0, Math.PI * 2); ctx.stroke(); }
+}
 function drawPlayer(){
-  const p = S.p, t = S.t, st = p.st, w = st.wd, f = p.face;
+  const p = S.p, t = S.t, st = p.st;
   if (p.dead){
     const left = Math.max(0, p.respawnAt - t);
     ctx.globalAlpha = .4; ctx.fillStyle = C.frost; rr(p.x - 9, p.y - 22, 18, 22, 6); ctx.fill(); ctx.globalAlpha = 1;
@@ -3006,68 +3094,7 @@ function drawPlayer(){
     ctx.font = `500 16px ${F_BODY}`; ctx.fillStyle = C.dust; ctx.fillText('saniye sonra yeniden doğacaksın', W / 2, 236);
     return;
   }
-  const ifr = t < p.ifrUntil;
-  const dodging = t < p.dodgeUntil;
-  if (S.mode === 'play' && t < p.hurtUntil && Math.floor(t * 16) % 2 === 0) return;
-  const body = gearCls('kiyafet'), hat = gearCls('sapka'), pants = gearCls('pantolon');
-  const outfit = body ? CLASSES[body].col : null;
-  if (dodging){
-    const gc = st.def.shadow ? '#b9a4e8' : st.def.bash ? C.stoneHi : C.frost;
-    for (let k = 3; k >= 1; k--){ ctx.globalAlpha = .16 * (4 - k); drawBodyShape(p.x - p.dodgeDir * k * 15, p.y, gc); }
-    ctx.globalAlpha = 1;
-    if (st.def.bash){ ctx.fillStyle = C.stoneHi; rr(p.x + p.dodgeDir * 14 - 6, p.y - 50, 12, 46, 3); ctx.fill(); ctx.strokeStyle = rgba(C.frost, .8); ctx.lineWidth = 2; ctx.stroke(); }
-  }
-  if (t < (p.powerUntil || -9) && !dodging){ ctx.strokeStyle = rgba(C.ember, .5 + .4 * Math.sin(t * 20)); ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(p.x + p.face * 12, p.y - 30, 9, 0, Math.PI * 2); ctx.stroke(); }
-  if (t < (p.critUntil || -9)){ ctx.fillStyle = rgba('#b9a4e8', .5 + .4 * Math.sin(t * 20)); ctx.beginPath(); ctx.arc(p.x, p.y - 58, 3.5, 0, Math.PI * 2); ctx.fill(); }
-  drawBodyShape(p.x, p.y, ifr ? C.frost : C.bone, ifr ? null : outfit);
-  if (pants && !ifr){ ctx.fillStyle = rgba(CLASSES[pants].col, .9); ctx.fillRect(p.x - 10, p.y - 12, 8, 12); ctx.fillRect(p.x + 2, p.y - 12, 8, 12); }
-  ctx.fillStyle = C.pit; ctx.fillRect(p.x + f * 3 - 1.5, p.y - 40, 3, 3);
-  /* şapka */
-  if (hat){
-    const hc = CLASSES[hat].col;
-    ctx.fillStyle = hc;
-    if (hat === 'okcu'){ ctx.beginPath(); ctx.moveTo(p.x - 10, p.y - 36); ctx.lineTo(p.x - f * 6, p.y - 52); ctx.lineTo(p.x + 10, p.y - 36); ctx.closePath(); ctx.fill(); }
-    else if (hat === 'suikastci'){ ctx.fillRect(p.x - 9, p.y - 41, 18, 5); }
-    else if (hat === 'tank'){ ctx.fillRect(p.x - 10, p.y - 47, 20, 10); ctx.fillStyle = C.pit; ctx.fillRect(p.x + f * 2 - 5, p.y - 41, 10, 2); }
-    else { ctx.fillRect(p.x - 13, p.y - 44, 26, 3); ctx.beginPath(); ctx.moveTo(p.x - 8, p.y - 44); ctx.lineTo(p.x - f * 4, p.y - 64); ctx.lineTo(p.x + 8, p.y - 44); ctx.fill(); }
-  }
-  /* silah */
-  const ae = t - p.atkT, aimA = Math.atan2(mouse.y - (p.y - 30), mouse.x - p.x);
-  ctx.lineCap = 'round';
-  if (w.kind === 'bow'){
-    const a = Math.abs(aimA) < Math.PI / 2 === (f > 0) ? aimA : (f > 0 ? 0 : Math.PI);
-    const bx = p.x + Math.cos(a) * 14, by = p.y - 30 + Math.sin(a) * 14;
-    ctx.strokeStyle = C.rust; ctx.lineWidth = 3;
-    ctx.beginPath(); ctx.arc(bx - Math.cos(a) * 6, by - Math.sin(a) * 6, 15, a - 1.1, a + 1.1); ctx.stroke();
-    if (S.mode === 'play' && !paused){ ctx.strokeStyle = rgba(C.bone, .16); ctx.lineWidth = 1; ctx.setLineDash([4, 6]); ctx.beginPath(); ctx.moveTo(bx, by); ctx.lineTo(bx + Math.cos(aimA) * 70, by + Math.sin(aimA) * 70); ctx.stroke(); ctx.setLineDash([]); }
-  } else if (w.kind === 'staff'){
-    const sx = p.x + f * 13;
-    ctx.strokeStyle = C.dust; ctx.lineWidth = 3; ctx.beginPath(); ctx.moveTo(sx, p.y - 2); ctx.lineTo(sx, p.y - 54); ctx.stroke();
-    const ready = t - p.atkT >= st.atkCd;
-    drawOrb(sx, p.y - 58, ready ? 5 : 3, st.wEl ? elCol(st.wEl) : C.frost);
-  } else if (w.kind === 'shield'){
-    const sx = p.x + f * (p.blocking ? 16 : 10), sy = p.blocking ? p.y - 46 : p.y - 34;
-    const parryOn = p.blocking && t - p.blockStart < st.parryWin;
-    ctx.fillStyle = parryOn ? C.ember : C.stoneHi; rr(sx - 5, sy, 10, p.blocking ? 40 : 26, 3); ctx.fill();
-    ctx.strokeStyle = p.blocking ? C.frost : C.rust; ctx.lineWidth = 2; rr(sx - 5, sy, 10, p.blocking ? 40 : 26, 3); ctx.stroke();
-  } else if (w.kind === 'hammer' && ae >= .3){
-    ctx.strokeStyle = C.rust; ctx.lineWidth = 4; ctx.beginPath(); ctx.moveTo(p.x + f * 6, p.y - 20); ctx.lineTo(p.x + f * 10, p.y - 56); ctx.stroke();
-    ctx.fillStyle = C.stoneHi; ctx.fillRect(p.x + f * 10 - 9, p.y - 64, 18, 12);
-  }
-  const mm = MELEE[w.kind];
-  if (mm && ae < mm.b){
-    const k = ae / mm.b, rad = w.kind === 'hammer' ? 62 : w.kind === 'dagger' ? 32 : w.kind === 'fist' ? 26 : 42;
-    const a0 = w.kind === 'hammer' ? -1.9 : -1.1, a1 = .7;
-    ctx.strokeStyle = rgba(st.wEl ? elCol(st.wEl) : C.bone, ae >= mm.a ? .95 : .4); ctx.lineWidth = ae >= mm.a ? 5 : 2;
-    ctx.beginPath();
-    if (f > 0) ctx.arc(p.x + 4, p.y - 26, rad, a0, a0 + (a1 - a0) * Math.min(1, k * 1.4));
-    else ctx.arc(p.x - 4, p.y - 26, rad, Math.PI - a0, Math.PI - a0 - (a1 - a0) * Math.min(1, k * 1.4), true);
-    ctx.stroke();
-  } else if (w.kind === 'dagger' || w.kind === 'fist'){
-    ctx.strokeStyle = C.dust; ctx.lineWidth = w.kind === 'dagger' ? 3 : 4;
-    ctx.beginPath(); ctx.moveTo(p.x + f * 8, p.y - 18); ctx.lineTo(p.x + f * (w.kind === 'dagger' ? 18 : 14), p.y - (w.kind === 'dagger' ? 10 : 18)); ctx.stroke();
-  }
-  if (p.barrier > 0 && t < p.barrierUntil){ ctx.strokeStyle = rgba(C.frost, .6 + .3 * Math.sin(t * 8)); ctx.lineWidth = 2; ctx.beginPath(); ctx.ellipse(p.x, p.y - 24, 22, 30, 0, 0, Math.PI * 2); ctx.stroke(); }
+  drawHero(p.x, p.y, p.face, Object.assign(heroLook(), {local:true}));
   /* ışınlanma hedefi */
   if (st.def.blink && S.mode === 'play' && !paused && t - p.dodgeT >= st.dodgeCd){
     let dx = mouse.x - p.x, dy = mouse.y - (p.y - p.h / 2); const d = Math.hypot(dx, dy);
@@ -3644,6 +3671,10 @@ function netRecv(from, ev, d){
     }
   } else if (ev === 'hit' && N.host){
     for (const h of d.l) applyRemoteHit(h);
+  } else if (ev === 'vx'){
+    /* lobi sahibi misafirin atışlarını çizer ve diğer misafirlere iletir; misafir kendi atışlarını atlar */
+    if (N.host){ for (const v of d.l){ applyVfx(v); (N.vxOut || (N.vxOut = [])).push([from, v]); } }
+    else for (const [who, v] of d.l) if (who !== acct.name) applyVfx(v);
   }
 }
 
@@ -3705,7 +3736,7 @@ function worldSnap(){
 function myState(){
   const p = S.p;
   return {n:acct.name, x:Math.round(p.x), y:Math.round(p.y), vx:Math.round(p.vx), vy:Math.round(p.vy), f:p.face, hp:Math.ceil(p.hp), mx:p.st.maxHp,
-    b:p.blocking ? 1 : 0, d:S.t < p.dodgeUntil ? 1 : 0, a:S.t - p.atkT < .17 ? 1 : 0, dn:p.dead ? 1 : 0, rs:p.dead ? Math.ceil(p.respawnAt - S.t) : 0, lv:attKey()};
+    b:p.blocking ? 1 : 0, d:S.t < p.dodgeUntil ? 1 : 0, a:S.t - p.atkT < .17 ? 1 : 0, dn:p.dead ? 1 : 0, rs:p.dead ? Math.ceil(p.respawnAt - S.t) : 0, lv:attKey(), h:heroLook()};
 }
 
 /* ---------- misafir tarafı ---------- */
@@ -3832,10 +3863,13 @@ function netTick(now){
   const direct = anyDirect(), iv = direct ? 50 : 125, batchOk = direct || now - (lobby.evT || 0) >= 125;
   if (N.host){
     if (N.evq.length && batchOk){ lobby.evT = now; netSend('*', 'ev', {rid:N.rid, l:N.evq}, true); N.evq = []; }
+    if (S.vfx && S.vfx.length){ for (const v of S.vfx) (N.vxOut || (N.vxOut = [])).push([acct.name, v]); S.vfx = []; }
+    if (N.vxOut && N.vxOut.length && batchOk){ netSend('*', 'vx', {rid:N.rid, l:N.vxOut}, true); N.vxOut = []; }
     if (S.mode === 'play' && now - (lobby.sendT || 0) >= iv){ lobby.sendT = now; netSend('*', 'w', worldSnap(), false); }
   } else if (S.mode === 'play'){
     const h = lobby.others.find(o => o.role === 'host'); if (!h) return;
     if (N.hits.length && batchOk){ lobby.evT = now; netSend(h.nick, 'hit', {rid:N.rid, l:N.hits}, true); N.hits = []; }
+    if (S.vfx && S.vfx.length && batchOk){ netSend(h.nick, 'vx', {rid:N.rid, l:S.vfx}, true); S.vfx = []; }
     if (now - (lobby.sendT || 0) >= iv){ lobby.sendT = now; netSend(h.nick, 'p', Object.assign(myState(), {rid:N.rid}), false); }
   }
 }
@@ -3855,15 +3889,13 @@ function drawMate(ps){
     return;
   }
   const k = Math.min(age, .1), x = ps.x + ps.vx * k, y = Math.min(FLOOR, ps.y + ps.vy * k);
-  ctx.globalAlpha = .78;
-  drawBodyShape(x, y, ps.d ? C.frost : col);
-  ctx.globalAlpha = 1;
-  ctx.fillStyle = C.pit; ctx.fillRect(x + ps.f * 3 - 1.5, y - 40, 3, 3);
-  if (ps.b){ ctx.fillStyle = C.stoneHi; rr(x + ps.f * 16 - 5, y - 46, 10, 40, 3); ctx.fill(); }
-  if (ps.a){
-    ctx.strokeStyle = rgba(C.bone, .8); ctx.lineWidth = 4; ctx.beginPath();
-    if (ps.f > 0) ctx.arc(x + 4, y - 26, 40, -1.1, .7); else ctx.arc(x - 4, y - 26, 40, Math.PI + 1.1, Math.PI - .7, true);
-    ctx.stroke();
+  if (ps.h){
+    /* ayağının altında takım rengi halka, üstünde kendi zırhı ve silahı */
+    ctx.strokeStyle = rgba(col, .8); ctx.lineWidth = 2; ctx.beginPath(); ctx.ellipse(x, y + 1, 16, 4, 0, 0, Math.PI * 2); ctx.stroke();
+    drawHero(x, y, ps.f, Object.assign({}, ps.h, {ae:(ps.h.ae ?? 9) + age}));
+  } else {
+    ctx.globalAlpha = .78; drawBodyShape(x, y, ps.d ? C.frost : col); ctx.globalAlpha = 1;
+    ctx.fillStyle = C.pit; ctx.fillRect(x + ps.f * 3 - 1.5, y - 40, 3, 3);
   }
   ctx.textAlign = 'center'; ctx.font = `600 12px ${F_BODY}`; ctx.fillStyle = col;
   ctx.fillText(ps.n || 'Arkadaş', x, y - 60);
