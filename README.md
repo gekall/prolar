@@ -12,6 +12,7 @@ Arkadaşlarla online oynanan 2D platform hack and slash oyunu. 10 bölüm, her b
 - Online lobi: biri lobi kurar, diğerleri 5 haneli kodla katılır. Lobi hiçbir yere kaydedilmez, herkes çıkınca kapanır. En fazla 4 kişi. Bölümü lobi sahibi seçer.
 - Lobide herkes aynı düşmanlarla dövüşür. Düşmanları lobi sahibinin oyunu yönetir; vuruşların ona gider, düşman ölünce herkeste ölür. Bir saldırının sana değip değmediğine kendi ekranında bakılır, dodge zamanlaması gördüğüne göredir.
 - Oyun verisi tarayıcılar arasında doğrudan (WebRTC) gider, Supabase sadece bağlantıyı kurar. Doğrudan bağlantı kurulamazsa veri Supabase üzerinden daha yavaş gider.
+- Co-op'ta bölüm kazanılınca 5 saniye sonra sıradaki açık bölüme herkes birlikte geçer. Lobi sahibi isterse ana ekrana dönerek durdurur.
 - Lobide biri düşerse 5 saniye sonra yeniden doğar. Takımda ayakta kimse kalmazsa bölüm kaybedilir. Tek başına oynarken ölünce bölüm biter.
 - Herkesin dodge'u aynıdır. Aynı class'tan 4 zırh parçası kuşanınca dodge class yeteneğine dönüşür: büyücü ışınlanır, okçu geri takla atar (sonraki ok ×2), suikastçı düşmanın arkasına geçer (sonraki vuruş kritik), tank kalkanla hücum eder (mobları sersemletir).
 

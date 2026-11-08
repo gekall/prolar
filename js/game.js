@@ -1011,8 +1011,22 @@ function endRun(won){
       else if (sel.c < 10){ prof.prog = {c:sel.c + 1, s:1}; S.unlockedNext = true; }
     }
   }
+  /* co-op: kazanınca sıradaki açık bölüme 5 sn sonra otomatik geçilir */
+  if (won && S.net && S.net.host){
+    const n = sel.s < 50 ? [sel.c, sel.s + 1] : [sel.c + 1, 1];
+    if (n[0] <= 10 && unlocked(n[0], n[1])){ S.autoNext = {c:n[0], s:n[1], at:performance.now() + AUTO_NEXT * 1000}; netEv('next', {c:n[0], s:n[1], in:AUTO_NEXT}); }
+  }
   markDirty(); flushSave();
   syncUI(); renderBag(); renderMarket();
+}
+const AUTO_NEXT = 5;
+/* lobi sahibi: süre dolunca sıradaki bölümü herkes için başlat */
+function autoNextTick(now){
+  const a = S.autoNext;
+  if (!a || S.mode !== 'won' || !S.net || !S.net.host || now < a.at) return;
+  S.autoNext = null;
+  if (!lobby.ch || !lobby.others.length) return;
+  selectLevel(a.c, a.s); coopStart();
 }
 function bossPhaseCheck(){
   const e = S.e;
@@ -3234,7 +3248,9 @@ function drawOverlay(){
     centerLine(e ? `${e.def.ad} düştü` : 'Bölüm temizlendi', C.ember, `700 76px ${F_DISPLAY}`, 220);
     centerLine(`${att[attKey()] || 0}. denemede   ·   +${S.gold} altın   ·   kalan can ${Math.ceil(p.hp)} / ${st.maxHp}`, C.dust, `500 17px ${F_BODY}`, 270);
     const nextOk = sel.s < 50 ? unlocked(sel.c, sel.s + 1) : sel.c < 10 && unlocked(sel.c + 1, 1);
-    const nextTxt = lobby.role === 'guest' ? "Sıradaki bölümü lobi sahibi seçer" : touchMode ? 'Aşağıdaki düğmelerle devam et' : nextOk
+    const an = S.autoNext, left = an ? Math.max(0, Math.ceil((an.at - performance.now()) / 1000)) : 0;
+    const nextTxt = an ? `Sıradaki bölüm ${an.c}-${an.s}, ${left} sn sonra başlıyor` + (lobby.role === 'host' ? (touchMode ? ' · durdurmak için Ana ekran' : ' · durdurmak için M') : '')
+      : lobby.role === 'guest' && lobby.ch ? "Sıradaki bölümü lobi sahibi seçer" : touchMode ? 'Aşağıdaki düğmelerle devam et' : nextOk
       ? (sel.s < 50 ? `Sıradaki bölüm için N'ye, tekrar için R'ye bas` : `${sel.c + 1}. bölüme geçmek için N'ye bas`)
       : (sel.c === 10 && sel.s === 50 ? 'Oyunun sonuna geldin' : "Tekrar için R'ye bas");
     centerLine(nextTxt, C.bone, `500 20px ${F_BODY}`, 322);
@@ -3622,7 +3638,10 @@ function netRecv(from, ev, d){
     if (N.snaps.length > 40) N.snaps.splice(0, N.snaps.length - 40);
     for (const ps of d.pl || []) if (ps.n !== acct.name) lobby.pstates[ps.n] = Object.assign({}, ps, {rx:now});
   } else if (ev === 'ev' && !N.host){
-    for (const e of d.l) N.evin.push(e);
+    for (const e of d.l){
+      if (e[0] === 'next'){ S.autoNext = {c:e[1].c, s:e[1].s, at:now + e[1].in * 1000}; continue; }
+      N.evin.push(e);
+    }
   } else if (ev === 'hit' && N.host){
     for (const h of d.l) applyRemoteHit(h);
   }
@@ -3885,6 +3904,7 @@ function frame(now){
   if (S.shake > 0) S.shake = Math.max(0, S.shake - dt * 30);
   if (S.e) S.e.shown += (S.e.hp - S.e.shown) * Math.min(1, dt * 4);
   netTick(now);
+  autoNextTick(now);
   tcTick();
   render(now);
   /* kare başına iş 11 ms'yi geçerse çözünürlüğü kademeli düşür, rahatlayınca geri yükselt */
